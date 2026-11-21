@@ -1,0 +1,14 @@
+<Bindings>
+	<Binding name="BAGBROKER_TOGGLE_HEATMAP" header="BAGBROKER" category="ADDONS">
+		BagBroker_ToggleHeatmap()
+	</Binding>
+	<Binding name="BAGBROKER_TOGGLE_PANEL" category="ADDONS">
+		BagBroker_ToggleAuctionPanel()
+	</Binding>
+	<Binding name="BAGBROKER_TOGGLE_MOBTIPS" category="ADDONS">
+		BagBroker_ToggleMobTooltips()
+	</Binding>
+	<Binding name="BAGBROKER_REPLACE_LOOT" category="ADDONS">
+		BagBroker_ReplaceLoot()
+	</Binding>
+</Bindings>

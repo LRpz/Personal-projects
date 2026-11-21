@@ -1,0 +1,548 @@
+-- Test runner: loads BagBroker in TOC order inside the mock client and checks its behaviour.
+-- Usage (from the repository folder): lua5.1 tests/run_tests.lua
+package.path = "tests/?.lua;" .. package.path
+local M = require("mock_wow")
+
+local ADDON_DIR = "BagBroker/"
+local ns = {}
+
+local function LoadAddon()
+	local files = {}
+	for line in io.lines(ADDON_DIR .. "BagBroker.toc") do
+		if line:match("%.lua%s*$") then files[#files + 1] = line:match("^%s*(.-)%s*$") end
+	end
+	for _, file in ipairs(files) do
+		local chunk = assert(loadfile(ADDON_DIR .. file))
+		chunk("BagBroker", ns)
+	end
+	return files
+end
+
+---------------------------------------------------------------------------
+-- Tiny test framework
+---------------------------------------------------------------------------
+local passed, failed = 0, 0
+local function test(name, fn)
+	local ok, err = pcall(fn)
+	if ok then
+		passed = passed + 1
+		print("PASS  " .. name)
+	else
+		failed = failed + 1
+		print("FAIL  " .. name .. "\n      " .. tostring(err))
+	end
+end
+local function eq(actual, expected, msg)
+	if actual ~= expected then
+		error(("%s: expected %s, got %s"):format(msg or "value", tostring(expected), tostring(actual)), 2)
+	end
+end
+local function truthy(v, msg) if not v then error((msg or "expected true") , 2) end end
+local function contains(list, pattern, msg)
+	for _, s in ipairs(list) do if tostring(s):find(pattern, 1, true) then return end end
+	error((msg or "missing line") .. ": " .. pattern .. "\n      in: " .. table.concat(list, " | "), 2)
+end
+
+---------------------------------------------------------------------------
+-- Fixtures
+---------------------------------------------------------------------------
+M.items = {
+	[2589] = { name = "Linen Cloth", quality = 1, sellPrice = 13, classID = 7, maxStack = 20 },
+	[2592] = { name = "Wool Cloth", quality = 1, sellPrice = 33, classID = 7, maxStack = 20 },
+	[1000] = { name = "Broken Fang", quality = 0, sellPrice = 50, classID = 15, maxStack = 5 },
+	[1001] = { name = "Collectible Grey", quality = 0, sellPrice = 10, classID = 15 },
+	[2000] = { name = "BoE Sword", quality = 2, sellPrice = 500, classID = 2, bindType = 2, equipLoc = "INVTYPE_WEAPON", ilvl = 20 },
+	[2001] = { name = "Old Chest", quality = 2, sellPrice = 200, classID = 4, bindType = 1, equipLoc = "INVTYPE_CHEST", ilvl = 10 },
+	[2002] = { name = "Better Chest", quality = 2, sellPrice = 300, classID = 4, bindType = 1, equipLoc = "INVTYPE_CHEST", ilvl = 20 },
+	[3000] = { name = "Quest Thing", quality = 1, sellPrice = 0, classID = 12 },
+	[6948] = { name = "Hearthstone", quality = 1, sellPrice = 0, classID = 15 },
+	[4000] = { name = "Cheap Goods", quality = 1, sellPrice = 100, classID = 7, maxStack = 20 },
+	[4001] = { name = "Pricey Goods", quality = 1, sellPrice = 100, classID = 7, maxStack = 20 },
+	[4002] = { name = "Unknown Goods", quality = 1, sellPrice = 100, classID = 7, maxStack = 20 },
+	[5000] = { name = "Epic Blade", quality = 4, sellPrice = 9000, classID = 2, bindType = 2, equipLoc = "INVTYPE_WEAPON", ilvl = 40 },
+	[7000] = { name = "Shiny Loot", quality = 2, sellPrice = 5000, classID = 15, maxStack = 1 },
+}
+M.commodities = { [2589] = true, [2592] = true, [4000] = true, [4001] = true, [4002] = true }
+M.equipped = { [5] = 15, [16] = 25, [17] = 25 }
+
+local files = LoadAddon()
+M.Fire("ADDON_LOADED", "BagBroker")
+M.Fire("PLAYER_LOGIN")
+
+local function ItemSlot(itemID, count, extra)
+	local s = { itemID = itemID, count = count or 1 }
+	for k, v in pairs(extra or {}) do s[k] = v end
+	return s
+end
+
+---------------------------------------------------------------------------
+-- Loading
+---------------------------------------------------------------------------
+test("addon loads every TOC file and initialises account-wide saved variables", function()
+	eq(#files, 10, "file count")
+	truthy(BagBrokerDB and BagBrokerDB.settings, "saved variables")
+	eq(ns.settings.autoSell, true, "default autoSell")
+	eq(ns:GetRealmKey(), "TestRealm-Alliance", "realm key")
+	truthy(M.tooltipPostCalls[Enum.TooltipDataType.Item], "item tooltip hook")
+	truthy(M.tooltipPostCalls[Enum.TooltipDataType.Unit], "unit tooltip hook")
+	truthy(SlashCmdList.BAGBROKER, "slash command")
+	truthy(_G.BagBrokerMinimapButton, "minimap button")
+end)
+
+---------------------------------------------------------------------------
+-- Pricing
+---------------------------------------------------------------------------
+local P = ns.Pricing
+
+test("money text formatting and parsing round-trip", function()
+	eq(P.FormatMoneyText(12345), "1g 23s 45c")
+	eq(P.FormatMoneyText(0), "0c")
+	eq(P.FormatMoneyText(500), "5s")
+	eq(P.ParseMoney("1g 23s 45c"), 12345)
+	eq(P.ParseMoney("1g23s"), 12300)
+	eq(P.ParseMoney("35s"), 3500)
+	eq(P.ParseMoney("80c"), 80)
+	eq(P.ParseMoney("1.5"), 15000)
+	eq(P.ParseMoney("1,25g"), 12500)
+	eq(P.ParseMoney("abc"), nil)
+	eq(P.ParseMoney("1x"), nil)
+	eq(P.ParseMoney(""), nil)
+end)
+
+test("weighted quantiles count units, not auctions", function()
+	local minP, p25, p50, p75, qty = P.WeightedQuantiles({
+		{ price = 100, qty = 1 }, { price = 200, qty = 1 }, { price = 300, qty = 98 },
+	})
+	eq(minP, 100, "min")
+	eq(p25, 300, "p25 dominated by the large stack")
+	eq(p50, 300, "p50")
+	eq(p75, 300, "p75")
+	eq(qty, 100, "quantity")
+	local _, a, b, c = P.WeightedQuantiles({ { price = 10, qty = 1 }, { price = 20, qty = 1 }, { price = 30, qty = 1 }, { price = 40, qty = 1 } })
+	eq(a, 10, "p25 even")
+	eq(b, 20, "p50 even")
+	eq(c, 30, "p75 even")
+end)
+
+test("price skips a thin layer of cheap units and undercuts the real wall", function()
+	local price, reason, d = P.SuggestPrice({ { price = 10000, qty = 2 }, { price = 15000, qty = 50 }, { price = 16000, qty = 100 } }, {})
+	eq(price, 14999, "price under the 1.5g wall")
+	eq(reason, "wall")
+	eq(d.skipped, 2, "skipped units")
+end)
+
+test("price undercuts the lowest listing when it is a real wall", function()
+	local price, reason = P.SuggestPrice({ { price = 5000, qty = 30 }, { price = 10000, qty = 70 } }, {})
+	eq(price, 4999)
+	eq(reason, "undercut")
+end)
+
+test("price ignores a lone outlier far below the market (gear)", function()
+	local price = P.SuggestPrice({ { price = 10000, qty = 1 }, { price = 100000, qty = 1 }, { price = 120000, qty = 1 } }, {})
+	eq(price, 99999, "outlier at 1g ignored, undercut 10g")
+end)
+
+test("price without competition uses the upper quartile; without live data the median", function()
+	local stats = { 100, 200, 300, 400 }
+	eq(select(1, P.SuggestPrice({}, { stats = stats })), 400, "no competition")
+	eq(select(2, P.SuggestPrice({}, { stats = stats })), "nocompetition")
+	eq(select(1, P.SuggestPrice(nil, { stats = stats })), 300, "estimate")
+	eq(select(1, P.SuggestPrice(nil, {})), nil, "no data")
+end)
+
+test("silver-only servers get prices rounded down to silver", function()
+	eq(select(1, P.SuggestPrice({ { price = 12345, qty = 10 } }, { silverOnly = true })), 12200)
+end)
+
+---------------------------------------------------------------------------
+-- Vendor decisions
+---------------------------------------------------------------------------
+local function Decide(itemID, slotExtra)
+	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(itemID, 1, slotExtra) } })
+	local info = ns:GetSlotInfo(0, 1)
+	return ns:ShouldVendor(info)
+end
+
+ns:SetStats(1001, 80, 90, 100, 120, 5)    -- grey that sells better on the auction house
+ns:SetStats(4000, 90, 95, 100, 110, 50)   -- net 95 < vendor 100
+ns:SetStats(4001, 150, 180, 200, 260, 50) -- net 190 > vendor 100
+
+test("vendor rules: junk, BoE, soulbound, auction comparison, lists", function()
+	eq(Decide(1000), true, "grey without auction data is sold")
+	eq(Decide(1001), false, "grey worth more at auction is kept")
+	eq(Decide(2000), false, "unbound bind-on-equip is never sold")
+	eq(Decide(2001, { bound = true }), true, "soulbound green below equipped item level is sold")
+	eq(Decide(2002, { bound = true }), false, "soulbound upgrade is kept")
+	eq(Decide(3000), false, "quest item kept")
+	eq(Decide(6948), false, "no vendor value kept")
+	eq(Decide(4000), true, "vendor 100 >= auction net 95")
+	eq(Decide(4001), false, "auction net 190 > vendor 100")
+	eq(Decide(4002), false, "no auction data: kept")
+	ns.db.junk[4001] = true
+	eq(Decide(4001), true, "junk list overrides")
+	ns.db.junk[4001] = nil
+	ns.db.keep[1000] = true
+	eq(Decide(1000), false, "keep list overrides")
+	ns.db.keep[1000] = nil
+	ns.settings.sellSoulboundGear = false
+	eq(Decide(2001, { bound = true }), false, "soulbound selling can be turned off")
+	ns.settings.sellSoulboundGear = true
+end)
+
+test("merchant visit sells exactly the qualifying slots and reports the total", function()
+	M.SetBags({ [0] = { size = 6,
+		[1] = ItemSlot(1000, 3), [2] = ItemSlot(2000), [3] = ItemSlot(4000, 10),
+		[4] = ItemSlot(4001, 10), [5] = ItemSlot(2001, 1, { bound = true }), [6] = ItemSlot(6948) } })
+	M.ResetCalls()
+	M.Fire("MERCHANT_SHOW")
+	M.Advance(5)
+	local sold = {}
+	for _, c in ipairs(M.calls) do if c[1] == "UseContainerItem" then sold[#sold + 1] = c[4] end end
+	table.sort(sold)
+	eq(table.concat(sold, ","), "1000,2001,4000", "sold item IDs")
+	contains(M.printed, "Sold 3 item(s) for <1350>", "summary (3x50 + 200 + 10x100)")
+	M.Fire("MERCHANT_CLOSED")
+end)
+
+test("holding Shift at a merchant skips selling", function()
+	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(1000, 1) } })
+	M.ResetCalls()
+	M.shift = true
+	M.Fire("MERCHANT_SHOW")
+	M.Advance(5)
+	M.shift = false
+	eq(M.CountCalls("UseContainerItem"), 0)
+	M.Fire("MERCHANT_CLOSED")
+end)
+
+---------------------------------------------------------------------------
+-- Tooltips
+---------------------------------------------------------------------------
+local function ItemTooltip(itemID, data, owner)
+	local tt = CreateFrame("GameTooltip")
+	tt.lines = {}
+	tt.owner = owner
+	data = data or {}
+	data.id = itemID
+	M.tooltipPostCalls[Enum.TooltipDataType.Item](tt, data)
+	return tt.lines
+end
+
+test("item tooltip adds Sell Price only when the game did not, and the auction quartiles", function()
+	local lines = ItemTooltip(4001, { lines = {} })
+	contains(lines, "Sell Price: <100>")
+	contains(lines, "Auction: <150> (<180> / <200> / <260>)")
+	lines = ItemTooltip(4001, { lines = { { type = Enum.TooltipDataLineType.SellPrice } } })
+	eq(#lines, 1, "only the auction line when the default sell price line exists")
+end)
+
+test("item tooltip multiplies by the hovered bag stack like the default line", function()
+	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(4001, 10) } })
+	local owner = { GetBagID = function() return 0 end, GetID = function() return 1 end }
+	local lines = ItemTooltip(4001, { lines = {} }, owner)
+	contains(lines, "Sell Price: <1000>")
+	contains(lines, "Auction: <1500> (<1800> / <2000> / <2600>)")
+end)
+
+test("item tooltip hides auction line for soulbound bag items", function()
+	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(4001, 1, { bound = true }) } })
+	local owner = { GetBagID = function() return 0 end, GetID = function() return 1 end }
+	local lines = ItemTooltip(4001, { lines = {} }, owner)
+	eq(#lines, 1, "sell price only")
+end)
+
+---------------------------------------------------------------------------
+-- Auction house: full scan and live search
+---------------------------------------------------------------------------
+test("full scan builds weighted per-unit statistics from replicate data", function()
+	M.replicate = {
+		{ itemID = 2592, count = 20, buyout = 2000 },  -- 100 each
+		{ itemID = 2592, count = 10, buyout = 1500 },  -- 150 each
+		{ itemID = 2592, count = 10, buyout = 3000 },  -- 300 each
+		{ itemID = 2589, count = 1, buyout = 0 },      -- bid only: ignored
+	}
+	M.ResetCalls()
+	M.Fire("AUCTION_HOUSE_SHOW")
+	M.Advance(1.5)
+	truthy(M.FindCall("ReplicateItems"), "replicate requested")
+	M.Fire("REPLICATE_ITEM_LIST_UPDATE")
+	M.Advance(1)
+	local s = ns:GetStats(2592)
+	truthy(s, "stats stored")
+	eq(s[1], 100, "min")
+	eq(s[2], 100, "p25")
+	eq(s[3], 100, "p50 (20 of 40 units at 100)")
+	eq(s[4], 150, "p75")
+	eq(s[5], 40, "quantity")
+	contains(M.printed, "Full scan complete: 3 auctions, 1 items.")
+	eq(ns.Scanner:StartFullScan(false), false, "second scan blocked by the 15 minute limit")
+	M.Fire("AUCTION_HOUSE_CLOSED")
+end)
+
+test("auction data written by one character is read by another on the same realm", function()
+	M.faction = "Alliance"
+	ns.realmData = nil
+	truthy(ns:GetStats(2592), "same faction sees the data")
+	M.faction = "Horde"
+	ns.realmData = nil
+	eq(ns:GetStats(2592), nil, "other faction has its own auction data by default")
+	ns.settings.shareFactions = true
+	ns.realmData = nil
+	eq(ns:GetRealmKey(), "TestRealm", "shared key")
+	ns.settings.shareFactions = false
+	M.faction = "Alliance"
+	ns.realmData = nil
+end)
+
+---------------------------------------------------------------------------
+-- Auction panel
+---------------------------------------------------------------------------
+test("selling panel lists auctionable items, prices them from live listings and posts one per click", function()
+	M.SetBags({ [0] = { size = 6,
+		[1] = ItemSlot(2592, 20), [2] = ItemSlot(2592, 5), [3] = ItemSlot(2000),
+		[4] = ItemSlot(2001, 1, { bound = true }), [5] = ItemSlot(3000), [6] = ItemSlot(4000, 4) } })
+	M.commodity[2592] = {
+		{ unitPrice = 90, quantity = 3, numOwnerItems = 0 },     -- thin cheap layer
+		{ unitPrice = 140, quantity = 100, numOwnerItems = 0 },  -- real wall
+		{ unitPrice = 120, quantity = 10, numOwnerItems = 10 },  -- our own auction: ignored
+	}
+	M.commodity[4000] = { { unitPrice = 96, quantity = 50, numOwnerItems = 0 } }
+	M.itemResults[2000] = { { buyoutAmount = 20000, quantity = 1, containsOwnerItem = false } }
+	M.ResetCalls()
+	M.Fire("AUCTION_HOUSE_SHOW")
+	M.Advance(0.2)
+	local panel = ns.Panel
+	truthy(panel.frame and panel.frame:IsShown(), "panel shown")
+	eq(#panel.rows, 3, "rows: wool (aggregated), BoE sword, cheap goods; soulbound and quest excluded")
+	local wool = panel.byKey["c2592"]
+	eq(wool.count, 25, "stacks aggregated")
+	eq(wool.duration, 1, "trade goods default to 12h")
+	eq(panel.byKey["i2000:20:0"].duration, 2, "BoE gear defaults to 24h")
+
+	-- Live search results arrive one by one.
+	for _ = 1, 3 do
+		local job = ns.Scanner.current
+		truthy(job, "a search is running")
+		if job.isCommodity then M.Fire("COMMODITY_SEARCH_RESULTS_UPDATED", job.itemID)
+		else M.Fire("ITEM_SEARCH_RESULTS_UPDATED", job.itemKey) end
+		M.Advance(0.2)
+	end
+	eq(wool.price, 139, "skips 3 cheap units, ignores own auction, undercuts 140")
+	eq(wool.checked, true, "wool proposed")
+	local goods = panel.byKey["c4000"]
+	eq(goods.price, 95, "cheap goods priced at 95")
+	eq(goods.vendorBetter, true, "vendor 100 beats auction net 90")
+	eq(goods.checked, false, "not proposed when the vendor pays more")
+	eq(panel.byKey["i2000:20:0"].price, 19999, "sword undercuts 2g")
+
+	M.ResetCalls()
+	panel:PostNext()
+	local post = M.FindCall("PostItem") or M.FindCall("PostCommodity")
+	truthy(post, "one post issued")
+	eq(M.CountCalls("PostItem") + M.CountCalls("PostCommodity"), 1, "exactly one post per click")
+	eq(post[1], "PostItem", "most valuable row first (sword 19999 > wool 25x139)")
+	eq(post[4], 2, "24h duration")
+	eq(post[7], 19999, "buyout")
+	M.Fire("AUCTION_HOUSE_AUCTION_CREATED", 1)
+	eq(panel.postedCount, 1, "posted counter")
+
+	M.ResetCalls()
+	panel:PostNext()
+	local c = M.FindCall("PostCommodity")
+	truthy(c, "commodity posted on the next click")
+	eq(c[5], 25, "whole quantity across stacks")
+	eq(c[6], 139, "unit price")
+	eq(c[4], 1, "12h")
+end)
+
+test("server confirmation request turns the button into Confirm post", function()
+	local panel = ns.Panel
+	local goods = panel.byKey["c4000"]
+	panel:SetChecked(goods, true)
+	M.needsConfirmation = true
+	M.ResetCalls()
+	panel:PostNext()
+	M.needsConfirmation = false
+	truthy(panel.pending, "pending post kept")
+	eq(panel.postButton.text, "Confirm post")
+	M.Advance(0.1)
+	truthy(M.FindCall("StaticPopup_Hide"), "default dialog hidden")
+	panel:PostNext()
+	truthy(M.FindCall("ConfirmPostCommodity"), "confirmed on the next click")
+	eq(panel.pending, nil)
+end)
+
+test("manual price edits and duration changes stick", function()
+	local panel = ns.Panel
+	panel:Select("c2592")
+	panel:ApplyPriceText("1g 5s")
+	local wool = panel.byKey["c2592"]
+	eq(wool.price, 10500, "manual price")
+	eq(wool.source, "manual")
+	panel:CycleRowDuration(1)
+	eq(wool.duration, 2, "row duration cycled")
+	panel:CycleCategory("trade", 1)
+	eq(ns.settings.durations.trade, 2, "category default cycled")
+	eq(panel.byKey["c4000"].duration, 2, "category change applies to rows without manual duration")
+	panel:ResetPrice()
+	eq(wool.price, 139, "auto price restored")
+	ns.settings.durations.trade = 1
+	M.Fire("AUCTION_HOUSE_CLOSED")
+end)
+
+---------------------------------------------------------------------------
+-- Loot learning, mob tooltips, heatmap
+---------------------------------------------------------------------------
+test("loot windows teach drop rates per NPC, including AoE loot and coin", function()
+	local g1 = "Creature-0-1-2-3-1234-00000001"
+	local g2 = "Creature-0-1-2-3-1234-00000002"
+	M.loot = {
+		{ type = 2, text = "12 Copper", sources = { g1, 5, g2, 7 } },
+		{ type = 1, link = M.Link(2589), qty = 2, sources = { g1, 2 } },
+	}
+	M.units.target = { guid = g1, name = "Kobold Miner" }
+	M.Fire("LOOT_READY")
+	M.Fire("LOOT_OPENED")   -- second event for the same window must not double count
+	M.Fire("LOOT_CLOSED")
+	local mob = ns.db.mobs[1234]
+	eq(mob.k, 2, "two kills")
+	eq(mob.m, 12, "coin")
+	eq(mob.i[2589][1], 1, "drop count")
+	eq(mob.i[2589][2], 2, "quantity")
+	eq(mob.n, "Kobold Miner", "name")
+	local cell = math.floor(0.252 * 40) * 60 + math.floor(0.505 * 60)
+	eq(ns.db.heat[1429][cell][1234], 2, "heat cell")
+end)
+
+test("empty corpses of tapped targets count as kills", function()
+	local g3 = "Creature-0-1-2-3-1234-00000003"
+	M.units.target = { guid = g3, name = "Kobold Miner", dead = true }
+	M.Fire("UNIT_HEALTH", "target")
+	M.Advance(3)
+	eq(ns.db.mobs[1234].k, 3, "third kill without loot")
+	M.units.target = nil
+end)
+
+test("mob tooltip shows loot per kill and drop chances in default line style", function()
+	-- Linen: vendor 13; value per kill = (12 coin + 2 linen x 13) / 3 kills
+	local tt = CreateFrame("GameTooltip")
+	tt.lines = {}
+	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-1234-00000009" })
+	contains(tt.lines, "Loot per kill: <13> (3 kills)")
+	contains(tt.lines, "Linen Cloth|r || 33%")
+	contains(tt.lines, "Money || <4>")
+	ns.settings.mobTooltips = false
+	tt.lines = {}
+	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-1234-00000009" })
+	eq(#tt.lines, 0, "toggle off hides the lines")
+	ns.settings.mobTooltips = true
+end)
+
+test("heatmap window opens, colours cells and toggles", function()
+	local cells, maxAvg = ns.Heat:ComputeCells(1429)
+	eq(#cells, 1, "one cell")
+	truthy(maxAvg > 0, "value")
+	local r, g, b = ns.Heat.HeatColor(1)
+	truthy(r > 0.9 and b < 0.2, "high value is red")
+	r, g, b = ns.Heat.HeatColor(0)
+	truthy(b > 0.9, "low value is blue")
+	BagBroker_ToggleHeatmap()
+	truthy(ns.Heat.frame:IsShown(), "shown")
+	eq(ns.Heat.mapID, 1429, "current zone")
+	truthy(ns.Heat.summary.text:find("3 kills recorded", 1, true), "summary text")
+	SlashCmdList.BAGBROKER("map")
+	eq(ns.Heat.frame:IsShown(), false, "slash command toggles it off (macro friendly)")
+end)
+
+---------------------------------------------------------------------------
+-- Full-bag replacement
+---------------------------------------------------------------------------
+test("full bags: the cheapest unprotected item is destroyed for more valuable loot", function()
+	M.SetBags({ [0] = { size = 4,
+		[1] = ItemSlot(1000, 1),                  -- grey 50c: cheapest
+		[2] = ItemSlot(6948),                     -- hearthstone: protected
+		[3] = ItemSlot(2002, 1, { bound = true }), -- soulbound green gear: protected
+		[4] = ItemSlot(4001, 20) } })              -- 20 x 190 net
+	M.loot = { { type = 1, link = M.Link(7000), qty = 1, sources = { "Creature-0-1-2-3-99-1", 1 } } }
+	M.ResetCalls()
+	M.Fire("LOOT_OPENED")
+	M.Advance(2)
+	eq(M.CountCalls("DeleteCursorItem"), 0, "nothing destroyed without a click (hardware event rule)")
+	local prompt = _G.BagBrokerReplacePrompt
+	truthy(prompt and prompt:IsShown(), "prompt shown")
+	truthy(prompt.text.text:find("Broken Fang", 1, true) and prompt.text.text:find("Shiny Loot", 1, true), "prompt names both items")
+	truthy(_G.BagBrokerReplaceButton, "named button for /click macros")
+	_G.BagBrokerReplaceButton.scripts.OnClick(_G.BagBrokerReplaceButton)
+	local del = M.FindCall("DeleteCursorItem")
+	truthy(del, "an item was destroyed on click")
+	eq(del[2] .. ":" .. del[3], "0:1", "the grey item")
+	M.Advance(1)
+	truthy(M.FindCall("LootSlot"), "loot taken")
+	M.Fire("LOOT_CLOSED")
+	eq(prompt:IsShown(), false, "prompt closes with the loot window")
+end)
+
+test("full bags: a blocked destroy is reported and the cursor cleared", function()
+	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(1000, 1) } })
+	M.loot = { { type = 1, link = M.Link(7000), qty = 1, sources = { "Creature-0-1-2-3-99-4", 1 } } }
+	M.ResetCalls()
+	M.Fire("LOOT_OPENED")
+	M.Advance(1)
+	M.deleteFails = true
+	BagBroker_ReplaceLoot()
+	M.deleteFails = false
+	eq(M.cursor, nil, "cursor cleared")
+	eq(M.CountCalls("LootSlot"), 0, "no loot attempted")
+	contains(M.printed, "The game blocked destroying the item")
+	M.Fire("LOOT_CLOSED")
+end)
+
+test("full bags: nothing is destroyed when the loot is worth less", function()
+	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(4001, 20) } })
+	M.loot = { { type = 1, link = M.Link(1000), qty = 1, sources = { "Creature-0-1-2-3-99-2", 1 } } }
+	M.ResetCalls()
+	M.Fire("LOOT_OPENED")
+	M.Advance(2)
+	eq(M.CountCalls("DeleteCursorItem"), 0)
+	M.Fire("LOOT_CLOSED")
+end)
+
+test("full bags: loot that stacks into an existing stack needs no replacement", function()
+	M.SetBags({ [0] = { size = 2, [1] = ItemSlot(1000, 1), [2] = ItemSlot(2589, 5) } })
+	M.loot = { { type = 1, link = M.Link(2589), qty = 3, sources = { "Creature-0-1-2-3-99-3", 3 } } }
+	M.ResetCalls()
+	M.Fire("LOOT_OPENED")
+	M.Advance(2)
+	eq(M.CountCalls("DeleteCursorItem"), 0)
+	M.Fire("LOOT_CLOSED")
+end)
+
+---------------------------------------------------------------------------
+-- Commands
+---------------------------------------------------------------------------
+test("slash commands change settings and lists", function()
+	SlashCmdList.BAGBROKER("sell off")
+	eq(ns.settings.autoSell, false)
+	SlashCmdList.BAGBROKER("sell on")
+	eq(ns.settings.autoSell, true)
+	SlashCmdList.BAGBROKER("compare p25")
+	eq(ns.settings.compare, "p25")
+	SlashCmdList.BAGBROKER("compare qty")
+	eq(ns.settings.compare, "p25", "invalid statistic rejected")
+	ns.settings.compare = "p50"
+	SlashCmdList.BAGBROKER("keep " .. M.Link(4000))
+	eq(ns.db.keep[4000], true)
+	SlashCmdList.BAGBROKER("junk " .. M.Link(4000))
+	eq(ns.db.keep[4000], nil, "moved off the keep list")
+	eq(ns.db.junk[4000], true)
+	SlashCmdList.BAGBROKER("forget " .. M.Link(4000))
+	eq(ns.db.junk[4000], nil)
+	SlashCmdList.BAGBROKER("wall 20")
+	eq(ns.settings.wallFraction, 0.2)
+	ns.settings.wallFraction = 0.1
+	SlashCmdList.BAGBROKER("status")
+	contains(M.printed, "Loot data: 2 mobs")
+end)
+
+print(("\n%d passed, %d failed"):format(passed, failed))
+os.exit(failed == 0 and 0 or 1)
