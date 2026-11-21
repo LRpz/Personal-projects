@@ -1,9 +1,9 @@
 <Bindings>
 	<Binding name="CLICK GrimoireMain:LeftButton" header="GRIMOIRE" category="ADDONS"/>
-	<Binding name="CLICK GrimoirePlan1:LeftButton" category="ADDONS"/>
-	<Binding name="CLICK GrimoirePlan2:LeftButton" category="ADDONS"/>
-	<Binding name="CLICK GrimoirePlan3:LeftButton" category="ADDONS"/>
-	<Binding name="CLICK GrimoirePlan4:LeftButton" category="ADDONS"/>
+	<Binding name="CLICK GrimoireDot:LeftButton" category="ADDONS"/>
+	<Binding name="CLICK GrimoireFiller:LeftButton" category="ADDONS"/>
+	<Binding name="CLICK GrimoireControl:LeftButton" category="ADDONS"/>
+	<Binding name="CLICK GrimoireSave:LeftButton" category="ADDONS"/>
 	<Binding name="GRIMOIRE_TOGGLE_COACH" category="ADDONS">
 		Grimoire_ToggleCoach()
 	</Binding>

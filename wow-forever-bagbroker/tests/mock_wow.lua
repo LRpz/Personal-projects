@@ -491,4 +491,143 @@ function M.CountCalls(name)
 end
 function M.ResetCalls() wipe(M.calls) end
 
+---------------------------------------------------------------------------
+-- Combat assistant: secrets, nameplates, unit relations, curves, spells, action bars
+---------------------------------------------------------------------------
+-- A stand-in for a secret value: issecretvalue is true for it and nothing else.
+M.SECRET = setmetatable({}, { __tostring = function() return "<secret>" end })
+function issecretvalue(v) return v == M.SECRET end
+
+function Widget:SetAlpha(a) self.alpha = a end
+function Widget:GetAlpha() return self.alpha or 1 end
+function Widget:SetTexture(t) self.texture = t end
+function Widget:GetTexture() return self.texture end
+
+-- Unit aliases: M.targetToken (what "target" is), M.petTarget, M.mouseover; "<unit>target" uses
+-- M.units[unit].target. M.units[token] = { guid, name, hp, max, dead, combat, target, level,
+-- creatureType }. M.secretHealth hides health and max (true in combat on Forever).
+local function Resolve(unit)
+	if unit == nil then return nil end
+	if unit == "target" then return M.targetToken or "target" end
+	if unit == "pettarget" then return M.petTarget end
+	if unit == "mouseover" then return M.mouseover or "mouseover" end
+	if unit == "player" or unit == "pet" then return unit end
+	local base = unit:match("^(.+)target$")
+	if base then
+		local u = M.units[Resolve(base)]
+		return u and u.target or nil
+	end
+	return unit
+end
+M.Resolve = Resolve
+local function U(unit) local r = Resolve(unit); return r and M.units[r] or nil end
+function UnitExists(unit) local r = Resolve(unit); return r ~= nil and (M.units[r] ~= nil or r == "player") end
+function UnitGUID(unit) local u = U(unit); return u and u.guid end
+function UnitName(unit) local u = U(unit); return u and u.name end
+function UnitIsDead(unit) local u = U(unit); return u and u.dead or false end
+function UnitIsUnit(a, b)
+	if M.secretIdentity then return M.SECRET end
+	local ra, rb = Resolve(a), Resolve(b)
+	return ra ~= nil and ra == rb
+end
+function UnitAffectingCombat(unit) local u = U(unit); return u and u.combat or false end
+function UnitCreatureType(unit) local u = U(unit); return u and u.creatureType end
+function UnitLevel(unit)
+	if unit and unit ~= "player" then local u = U(unit); if u and u.level then return u.level end end
+	return M.level or 20
+end
+function UnitHealth(unit)
+	local u = U(unit)
+	if unit == "pet" and u then return u.hp end
+	if not u then return 0 end
+	if M.secretHealth then return M.SECRET end
+	return u.hp
+end
+function UnitHealthMax(unit)
+	local u = U(unit)
+	if not u then return 0 end
+	if M.secretHealth and unit ~= "pet" and unit ~= "player" then return M.SECRET end
+	return u.max
+end
+function GetRaidTargetIndex() return nil end
+
+C_NamePlate = {}
+M.plates = {}
+function M.AddPlate(token, unit)
+	M.units[token] = unit
+	local plate = CreateFrame("Frame", nil, UIParent)
+	plate.namePlateUnitToken = token
+	plate.UnitFrame = CreateFrame("Frame", nil, plate)
+	M.plates[token] = plate
+	M.Fire("NAME_PLATE_UNIT_ADDED", token)
+	return plate
+end
+function M.RemovePlate(token)
+	M.Fire("NAME_PLATE_UNIT_REMOVED", token)
+	M.plates[token] = nil
+	M.units[token] = nil
+end
+function C_NamePlate.GetNamePlateForUnit(unit) local r = Resolve(unit); return r and M.plates[r] or nil end
+function C_NamePlate.GetNamePlates()
+	local list = {}
+	for _, p in pairs(M.plates) do list[#list + 1] = p end
+	return list
+end
+
+-- Curves: step curves evaluated on a health or mana share.
+C_CurveUtil = {}
+function C_CurveUtil.CreateCurve()
+	local c = { points = {} }
+	function c:SetType(t) self.type = t end
+	function c:AddPoint(x, y) table.insert(self.points, { x, y }); table.sort(self.points, function(a, b) return a[1] < b[1] end) end
+	function c:Evaluate(x)
+		local y = self.points[1] and self.points[1][2] or 0
+		for _, p in ipairs(self.points) do if x >= p[1] then y = p[2] end end
+		return y
+	end
+	return c
+end
+Enum.LuaCurveType = { Linear = 0, Step = 1 }
+function UnitHealthPercent(unit, _, curve)
+	local u = U(unit)
+	local share = (u and u.max and u.max > 0) and u.hp / u.max or 0
+	if type(curve) == "table" then return curve:Evaluate(share) end
+	return share * 100
+end
+function UnitPowerPercent(_, _, _, curve)
+	local share = M.manaShare or 1
+	if type(curve) == "table" then return curve:Evaluate(share) end
+	return share * 100
+end
+
+-- Spells by ID, tooltip text (M.spellText[name]) and base cooldowns (M.spellCooldowns[name], ms).
+M.spellText, M.spellCooldowns = {}, {}
+local function SpellByID(id)
+	for name, s in pairs(M.knownSpells) do if s[1] == id then return name, s end end
+	for name, s in pairs(M.otherSpells or {}) do if s[1] == id then return name, s end end
+end
+function C_Spell.GetSpellInfo(x)
+	if type(x) == "number" then
+		local name, s = SpellByID(x)
+		return name and { spellID = s[1], iconID = s[2], name = name } or nil
+	end
+	local s = M.knownSpells[x]
+	if not s then return nil end
+	return { spellID = s[1], iconID = s[2], name = x }
+end
+function C_Spell.GetSpellName(id) return (SpellByID(id)) end
+function C_Spell.GetSpellDescription(id) local name = SpellByID(id); return name and M.spellText[name] or "" end
+function GetSpellBaseCooldown(id) local name = SpellByID(id); return name and M.spellCooldowns[name] or 0, 1500 end
+
+M.itemCounts = {}
+function C_Item.GetItemCount(id) return M.itemCounts[id] or 0 end
+
+-- Action bars: M.actions[slot] = { "spell", spellID }; M.bindings[command] = key.
+M.actions, M.bindings, M.cvars = {}, {}, {}
+function HasAction(slot) return M.actions[slot] ~= nil end
+function GetActionInfo(slot) local a = M.actions[slot]; if a then return a[1], a[2] end end
+function GetMacroSpell() return nil end
+function GetBindingKey(command) return M.bindings[command] end
+function GetCVar(name) return M.cvars[name] or "1" end
+
 return M

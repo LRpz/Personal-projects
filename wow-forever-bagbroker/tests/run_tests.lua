@@ -246,7 +246,7 @@ end
 
 test("item tooltip: aligned block with sell price, lowest auction and quartiles", function()
 	local lines = ItemTooltip(4001, { lines = {} })
-	-- Net = price - 5% cut - deposit (15% of the 1s vendor price for the 12h trade-goods default = 15c).
+	-- Net = price - 5% cut - deposit (15% of the 1s vendor price for the short trade-goods default = 15c).
 	eq(table.concat(lines, " | "), "Sell Price || 1s 00c | Auction (net) || 1s 27c |   25% || 1s 56c |   50% || 1s 75c |   75% || 2s 32c")
 end)
 
@@ -294,9 +294,9 @@ end)
 
 
 test("auction net deducts the cut and a deposit that is calibrated at the auction house", function()
-	eq(ns:DepositPerUnit(4001, 100), 15, "15% of 1s for a 12h trade good")
+	eq(ns:DepositPerUnit(4001, 100), 15, "15% of 1s for a short (2h) trade good")
 	eq(ns:NetFromPrice(4001, 200, 100), 175, "190 after the cut, minus 15 deposit")
-	eq(ns:DepositPerUnit(2000, 500), 150, "BoE gear defaults to 24h: 30%")
+	eq(ns:DepositPerUnit(2000, 500), 150, "BoE gear defaults to medium (8h): 30%")
 	local saved = ns.db.depositRates[1]
 	ns.db.depositRates[1] = nil
 	ns:RecordDepositRate(1, 20, 100)
@@ -434,8 +434,8 @@ test("selling panel lists auctionable items, prices them from live listings and 
 	eq(#panel.rows, 3, "rows: wool (aggregated), BoE sword, cheap goods; soulbound and quest excluded")
 	local wool = panel.byKey["c2592"]
 	eq(wool.count, 25, "stacks aggregated")
-	eq(wool.duration, 1, "trade goods default to 12h")
-	eq(panel.byKey["i2000:20:0"].duration, 2, "BoE gear defaults to 24h")
+	eq(wool.duration, 1, "trade goods default to short (2h)")
+	eq(panel.byKey["i2000:20:0"].duration, 2, "BoE gear defaults to medium (8h)")
 
 	-- Live search results arrive one by one.
 	for _ = 1, 3 do
@@ -461,7 +461,7 @@ test("selling panel lists auctionable items, prices them from live listings and 
 	truthy(post, "one post issued")
 	eq(M.CountCalls("PostItem") + M.CountCalls("PostCommodity"), 1, "exactly one post per click")
 	eq(post[1], "PostItem", "most valuable row first (sword 19999 > wool 25x139)")
-	eq(post[4], 2, "24h duration")
+	eq(post[4], 2, "medium (8h) duration")
 	eq(post[7], 19999, "buyout")
 	M.Fire("AUCTION_HOUSE_AUCTION_CREATED", 1)
 	eq(panel.postedCount, 1, "posted counter")
@@ -472,7 +472,7 @@ test("selling panel lists auctionable items, prices them from live listings and 
 	truthy(c, "commodity posted on the next click")
 	eq(c[5], 25, "whole quantity across stacks")
 	eq(c[6], 139, "unit price")
-	eq(c[4], 1, "12h")
+	eq(c[4], 1, "short (2h)")
 end)
 
 test("server confirmation request turns the button into Confirm post", function()

@@ -59,9 +59,23 @@ M.knownSpells = {
 	["Health Funnel"] = { 755, 136168 }, ["Drain Soul"] = { 1120, 136163 },
 	["Suffering"] = { 17735, 136220, pet = true }, ["Sacrifice"] = { 7812, 136190, pet = true },
 	["Seduction"] = { 6358, 136175, pet = true },
+	["Shadow Bolt"] = { 686, 136197 }, ["Shoot"] = { 5019, 135463 }, ["Death Coil"] = { 6789, 136145 },
 }
+M.otherSpells = { ["Siphon Life"] = { 18265, 136188 }, ["Searing Pain"] = { 5676, 135827 } }
+M.spellText = {
+	["Corruption"] = "Corrupts the target, causing 90 Shadow damage over 18 sec.",
+	["Bane of Agony"] = "Curses the target with agony, causing 240 Shadow damage over 24 sec. This damage is dealt slowly at first.",
+	["Immolate"] = "Burns the enemy for 40 Fire damage and then an additional 60 Fire damage over 15 sec.",
+	["Siphon Life"] = "Transfers 15 health from the target to the caster every 3 sec. Lasts 30 sec.",
+	["Drain Life"] = "Transfers 10 health every 1 sec from the target to the caster for 5 sec.",
+	["Drain Soul"] = "Drains the soul of the target, causing 150 Shadow damage over 15 sec.",
+	["Fear"] = "Strikes fear in the enemy, causing it to run in fear for up to 15 sec.",
+	["Life Tap"] = "Converts 60 health into 60 mana.",
+}
+M.spellCooldowns = { ["Death Coil"] = 120000 }
 M.petFamily = "Voidwalker"
 M.units.pet = { guid = "Pet-0-1", name = "Voidwalker" }
+M.units.player = { guid = "Player-1-1", name = "Me", hp = 1000, max = 1000 }
 
 local bb, gr = {}, {}
 Load("BagBroker/", "BagBroker.toc", bb)
@@ -99,65 +113,322 @@ test("talent status: done, next and due points from the talent system", function
 	gr.Talents:Toggle()
 end)
 
--- Coach -----------------------------------------------------------------------------------------
-test("coach builds the Voidwalker plans from known spells, with macro conditions and raid icons", function()
-	local coach = gr.Coach
-	truthy(coach.frame and coach.frame:IsShown(), "coach shown")
-	eq(coach.petKey, "Voidwalker")
-	local two = coach:Plans()[2]
-	eq(two.title, "Two mobs")
-	eq(#two.steps, 5, "Siphon Life is not known yet: skipped")
-	local b = coach.buttons[2]
-	eq(b:GetAttribute("step1"), "/targetenemy [noexists][dead][noharm]\n/tm 8\n/petattack [@target,harm,nodead]\n/cast [@target,harm,nodead] Bane of Agony")
-	eq(b:GetAttribute("step3"), "/targetenemy\n/tm 7\n/cast [@target,harm,nodead] Bane of Agony")
-	eq(b:GetAttribute("loopStart"), 5, "loop starts with Drain Life")
-	local single = coach:Plans()[1]
-	eq(single.steps[3].spell, "Immolate", "Immolate below 30, Siphon Life skipped")
+-- Coach and assistant ----------------------------------------------------------------------------
+local A, S, C = gr.Assist, gr.Spells, gr.Coach
+local function Cast(spellID, castGUID)
+	M.Fire("UNIT_SPELLCAST_SENT", "player", nil, castGUID, spellID)
+	M.Fire("UNIT_SPELLCAST_SUCCEEDED", "player", castGUID, spellID)
+end
+local function Rec() A:Update(0.1); return A.last end
+local function Queue(rec, token)
+	local list = {}
+	for _, s in ipairs(rec.queues[A.byToken[token]] or {}) do list[#list + 1] = s end
+	return table.concat(list, ",")
+end
+local function Kobold(guid, hp, extra)
+	local u = { guid = "Creature-0-1-2-3-" .. (extra and extra.npc or 1001) .. "-" .. guid, name = "Kobold", hp = hp, max = hp, level = 20,
+		creatureType = "Humanoid", combat = false }
+	for k, v in pairs(extra or {}) do u[k] = v end
+	return u
+end
+
+test("spells: damage and duration read from tooltips at your rank", function()
+	local d, t = S.ParseDescription(M.spellText["Corruption"]); eq(d, 90); eq(t, 18)
+	d, t = S.ParseDescription(M.spellText["Siphon Life"]); eq(d, 150, "per tick x ticks"); eq(t, 30)
+	d, t = S.ParseDescription(M.spellText["Drain Life"]); eq(d, 50); eq(t, 5)
+	d, t = S.ParseDescription(M.spellText["Immolate"]); eq(d, 60, "the DoT part"); eq(t, 15)
+	d, t = S.ParseDescription(M.spellText["Fear"]); eq(d, nil); eq(t, 15)
+	d = S.ParseDescription("Instantly blasts the target for 91 to 104 Shadow damage."); eq(d, 97.5, "direct damage range")
+	eq(S:Damage("Bane of Agony"), 240, "known spells cached at login")
+	eq(S.info["Life Tap"].healthCost, 60)
+	eq(S:Cooldown("Death Coil"), 120)
 end)
 
-test("coach presses step through the opener, loop the filler, reset on right-click and combat end", function()
-	local b = gr.Coach.buttons[2]
-	local macros = {}
-	for i = 1, 7 do macros[i] = M.Press(b) end
-	truthy(macros[1]:find("Bane of Agony", 1, true) and macros[2]:find("Corruption", 1, true), "opener order")
-	truthy(macros[5]:find("Drain Life", 1, true) and macros[6]:find("Drain Life", 1, true) and macros[7]:find("Drain Life", 1, true), "loop repeats")
-	eq(gr.Coach.activePlan, 2, "panel follows the pressed plan")
-	truthy(gr.Coach.frame.rows[5].highlight.shown, "next step highlighted")
-	eq(M.Press(b, "RightButton"), nil, "right-click casts nothing")
-	truthy(M.Press(b):find("Bane of Agony", 1, true), "restarted")
-	M.EndCombat(b)
-	eq(b:GetAttribute("index"), 1, "combat end resets")
+test("talents decide the specialization (Affliction before any point)", function()
+	eq(gr.Talents:Spec(), "Affliction")
+	M.talents = { [105906] = 5, [105907] = 3 }  -- Unholy Power, Demonic Embrace
+	M.Fire("TRAIT_CONFIG_UPDATED")
+	eq(gr.Talents:Spec(), "Demonology")
+	M.talents = { [105924] = 2 }
+	M.Fire("TRAIT_CONFIG_UPDATED")
+	eq(gr.Talents:Spec(), "Affliction")
 end)
 
-test("one key drives every plan through modifier conditions", function()
-	eq(gr.Coach.router:GetAttribute("macrotext"),
-		"/click [mod:alt] GrimoirePlan4; [mod:ctrl] GrimoirePlan3; [mod:shift] GrimoirePlan2; GrimoirePlan1")
+test("one key: Affliction order (Agony, Corruption), drains to refill, demon sent only when idle", function()
+	truthy(C.frame and C.frame:IsShown(), "coach shown")
+	eq(C.petKey, "Voidwalker")
+	eq(C.roles.dot:GetAttribute("macrotext"), table.concat({
+		"/targetenemy [noexists][dead][noharm]",
+		"/castsequence [@target,harm,nodead,nochanneling] reset=target/combat Bane of Agony, Corruption, Drain Life, Drain Life, Drain Life",
+		"/stopmacro [@pettarget,exists,nodead]",
+		"/petattack [@target,harm,nodead]" }, "\n"), "Immolate is left to the assistant (high-health enemies only)")
+	eq(C.roles.filler:GetAttribute("macrotext"), "/targetenemy [noexists][dead][noharm]\n/cast [@target,harm,nodead,nochanneling] Drain Life")
+	eq(C.roles.control:GetAttribute("macrotext"), "/cast [@target,harm,nodead] Fear")
+	eq(C.roles.save:GetAttribute("macrotext"), "/cast [@pet,exists,nodead,nochanneling] Health Funnel; [@target,harm,nodead] Death Coil")
+	eq(C.router:GetAttribute("macrotext"), "/click [mod:alt] GrimoireSave; [mod:ctrl] GrimoireControl; [mod:shift] GrimoireFiller; GrimoireDot")
 end)
 
-test("coach follows the demon: Succubus plans use Seduction", function()
+test("one key: Succubus control is Seduction with the demon's family, then Fear", function()
 	M.petFamily = "Sayaad"
 	M.Fire("UNIT_PET", "player")
-	local coach = gr.Coach
-	eq(coach.petKey, "Succubus", "Sayaad treated as Succubus")
-	local two = coach:Plans()[2]
-	eq(two.title, "Two humanoids")
-	truthy(coach.buttons[2]:GetAttribute("step1"):find("Seduction", 1, true), "Seduction first")
-	eq(coach.utility[1].data.spell, "Seduction", "utility row follows the demon")
-	truthy(coach.frame.advice.text:find("Succubus", 1, true), "advice line")
+	eq(C.petKey, "Succubus")
+	eq(C.roles.control:GetAttribute("macrotext"), "/cast [@target,harm,nodead,pet:Sayaad] Seduction; [@target,harm,nodead] Fear")
+	eq(C.utility[1].data.spell, "Seduction", "utility row follows the demon")
 	M.petFamily = "Voidwalker"
 	M.Fire("UNIT_PET", "player")
-	eq(coach.petKey, "Voidwalker")
+	eq(C.petKey, "Voidwalker")
 end)
 
-test("coach rebuilds after combat when spells change during a fight", function()
+test("assist: opener queue on a hostile target before the pull, with its key", function()
+	M.bindings["CLICK GrimoireMain:LeftButton"] = "F"
+	M.AddPlate("nameplate1", Kobold("A", 600))
+	M.targetToken = "nameplate1"
+	M.Fire("PLAYER_TARGET_CHANGED")
+	local rec = Rec()
+	eq(rec.prepull, true)
+	eq(Queue(rec, "nameplate1"), "Bane of Agony,Corruption,Immolate", "600 health: lives through Immolate")
+	eq(rec.spell, "Bane of Agony")
+	eq(rec.switch, false)
+	eq(A:KeyHint("Bane of Agony"), "F", "the one key casts it next")
+	truthy(C.frame.nowKey.text:find("[F]", 1, true), C.frame.nowKey.text)
+	local w = gr.Plates.widgets[M.plates.nameplate1]
+	truthy(w and w.shown, "nameplate widget shown")
+	eq(w.queue[1].texture, 136139, "Agony icon first on the plate")
+	eq(w.label.text, "|cff40ff40NOW|r")
+end)
+
+test("assist: a cast leaves the queue; its first tick confirms it landed", function()
 	M.combat = true
-	M.knownSpells["Siphon Life"] = { 18265, 136188 }
-	M.Fire("SPELLS_CHANGED")
-	eq(#gr.Coach:Plans()[2].steps, 5, "no rebuild in combat")
+	M.units.nameplate1.combat = true
+	M.units.nameplate1.target = "pet"
+	M.petTarget = "nameplate1"
+	M.Fire("PLAYER_REGEN_DISABLED")
+	M.secretHealth = true  -- Forever hides health in combat
+	Cast(980, "cast-1")    -- Bane of Agony
+	local mob = A.byToken.nameplate1
+	eq(mob.dots["Bane of Agony"].status, "pending")
+	eq(A.seqIndex, 2, "the one key moved to Corruption")
+	local rec = Rec()
+	eq(Queue(rec, "nameplate1"), "Corruption,Immolate")
+	eq(A:KeyHint("Corruption"), "F")
+	M.Advance(2)
+	M.Fire("UNIT_COMBAT", "nameplate1", "WOUND", "", 10, 32)
+	eq(mob.dots["Bane of Agony"].status, "landed", "a shadow tick confirms it")
+	eq(A:Health(mob), 590, "health followed from readable damage")
+end)
+
+test("assist: a resist puts the spell back in that enemy's queue", function()
+	Cast(172, "cast-2")    -- Corruption
+	M.Fire("UNIT_COMBAT", "nameplate1", "RESIST", "", 0, 32)
+	local mob = A.byToken.nameplate1
+	eq(mob.dots["Corruption"], nil, "removed")
+	local rec = Rec()
+	eq(rec.queues[mob][1], "Corruption", "back first in the queue")
+	truthy(mob.flash.text == "Corruption resisted", mob.flash.text)
+	truthy(gr.Plates.widgets[M.plates.nameplate1].note.text:find("resisted", 1, true), "note on the plate")
+	M.Advance(1)
+	Cast(172, "cast-3")
+	M.Advance(3)
+	M.Fire("UNIT_COMBAT", "nameplate1", "WOUND", "", 15, 32)
+	eq(mob.dots["Corruption"].status, "landed")
+end)
+
+test("assist: a third enemy is Feared first, then the next undotted enemy is focused", function()
+	M.AddPlate("nameplate2", Kobold("B", 600, { combat = true, target = "pet" }))
+	M.AddPlate("nameplate3", Kobold("C", 600, { combat = true, target = "player" }))
+	local rec = Rec()
+	eq(rec.n, 3)
+	eq(rec.spell, "Fear", "Voidwalker handles two without Siphon Life")
+	eq(rec.focus, A.byToken.nameplate3, "the one hitting you")
+	eq(rec.switch, true)
+	truthy(C.frame.nowWhere.text:find("switch", 1, true), C.frame.nowWhere.text)
+	eq(gr.Plates.widgets[M.plates.nameplate3].label.text, "|cffffd200NEXT|r")
+	M.targetToken = "nameplate3"
+	M.Fire("PLAYER_TARGET_CHANGED")
+	Cast(5782, "cast-4")  -- Fear
+	rec = Rec()
+	eq(rec.focus, A.byToken.nameplate2, "the fresh enemy next: most DoTs missing")
+	eq(Queue(rec, "nameplate3"), "", "hands off the feared enemy")
+	M.Advance(2)
+	M.Fire("UNIT_COMBAT", "nameplate3", "WOUND", "", 20, 1)
+	eq(A.byToken.nameplate3.control, nil, "damage broke Fear")
+	rec = Rec()
+	eq(rec.spell, "Fear", "Fear it again")
+end)
+
+test("assist: no more casts on an enemy your DoTs already kill; skips DoTs that will not finish", function()
+	M.combat, M.secretHealth = false, false
+	M.Fire("PLAYER_REGEN_ENABLED")
+	for _, t in ipairs({ "nameplate1", "nameplate2", "nameplate3" }) do M.RemovePlate(t) end
+	M.AddPlate("nameplate4", Kobold("D", 280, { combat = true, target = "pet" }))
+	M.targetToken = "nameplate4"
+	M.Fire("PLAYER_TARGET_CHANGED")
+	M.combat, M.secretHealth = true, true
+	M.Fire("PLAYER_REGEN_DISABLED")
+	local rec = Rec()
+	eq(Queue(rec, "nameplate4"), "Bane of Agony,Corruption,Immolate")
+	Cast(980, "cast-5")
+	rec = Rec()
+	eq(Queue(rec, "nameplate4"), "Corruption", "40 health beyond Agony: Immolate (60) would not finish, Corruption still pays")
+	Cast(172, "cast-6")
+	rec = Rec()
+	local st = rec.status[A.byToken.nameplate4]
+	eq(st.dies, true, "330 DoT damage left vs 280 health")
+	eq(Queue(rec, "nameplate4"), "")
+	truthy(gr.Plates.widgets[M.plates.nameplate4].note.text:find("dies", 1, true), "plate says it dies")
+	M.itemCounts[6265] = 1
+	eq(rec.spell, "Drain Soul", "few shards and it dies during the channel")
+	M.itemCounts[6265] = 10
+	gr.Assist.vitals.player.sync = nil
+	rec = Rec()
+	eq(rec.spell, "Drain Life", "enough shards: drain (your health unknown)")
+end)
+
+test("assist: your health decides drain or wand; demon health asks for Health Funnel", function()
+	local v = A.vitals.player
+	v.max, v.sync = 1000, { health = 1000, net = v.taken - v.healed, time = GetTime() }
+	local rec = Rec()
+	eq(rec.spell, "Shoot", "healthy and the enemy dies to DoTs: wand")
+	M.Fire("UNIT_COMBAT", "player", "WOUND", "", 400, 1)
+	rec = Rec()
+	eq(rec.spell, "Drain Life", "below 70%: drain")
+	eq(math.floor(rec.playerShare * 100 + 0.5), 60)
+	local pv = A.vitals.pet
+	pv.max, pv.sync = 500, { health = 500, net = pv.taken - pv.healed, time = GetTime() }
+	M.Fire("UNIT_COMBAT", "pet", "WOUND", "", 300, 1)
+	rec = Rec()
+	eq(rec.spell, "Health Funnel", "demon below half, you above half")
+	eq(rec.self, true)
+	truthy(C.frame.nowWhere.text:find("your demon", 1, true), C.frame.nowWhere.text)
+	M.units.nameplate4.target = "player"
+	M.Fire("UNIT_COMBAT", "player", "WOUND", "", 350, 1)
+	rec = Rec()
+	eq(rec.spell, "Death Coil", "below 35% and it is hitting you")
+	M.Fire("UNIT_COMBAT", "player", "HEAL", "", 600, 32)
+	M.Fire("UNIT_COMBAT", "pet", "HEAL", "", 300, 32)
+end)
+
+test("assist: health learned from a full kill teaches the next one of its kind", function()
+	local mob = A.byToken.nameplate4
+	M.Fire("UNIT_COMBAT", "nameplate4", "WOUND", "", 200, 32)
+	M.Fire("UNIT_COMBAT", "nameplate4", "WOUND", "", 140, 1)
+	M.units.nameplate4.dead = true
+	M.RemovePlate("nameplate4")
+	eq(gr.db.health["n1001:20"].max, 280, "read before the pull: exact")
+	M.AddPlate("nameplate5", Kobold("E", 450, { npc = 2002, combat = true, target = "pet" }))
+	local e = A.byToken.nameplate5
+	eq(A:Health(e), nil, "never seen: unknown")
+	M.Fire("UNIT_COMBAT", "nameplate5", "WOUND", "", 250, 1)
+	M.Fire("UNIT_COMBAT", "nameplate5", "WOUND", "", 200, 1)
+	M.units.nameplate5.dead = true
+	M.RemovePlate("nameplate5")
+	eq(gr.db.health["n2002:20"].max, 450, "learned from the damage it took")
+	M.AddPlate("nameplate6", Kobold("F", 450, { npc = 2002, combat = true, target = "pet" }))
+	M.Fire("UNIT_COMBAT", "nameplate6", "WOUND", "", 100, 1)
+	eq(A:Health(A.byToken.nameplate6), 350, "the next one starts from the learned health")
+	M.RemovePlate("nameplate6")
+end)
+
+test("assist: DoT damage correction learned from the ticks you see", function()
+	M.combat, M.secretHealth = false, false
+	M.Fire("PLAYER_REGEN_ENABLED")
+	M.AddPlate("nameplate7", Kobold("G", 5000, { combat = true, target = "pet" }))
+	M.targetToken = "nameplate7"
+	M.Fire("PLAYER_TARGET_CHANGED")
+	M.combat = true
+	M.Fire("PLAYER_REGEN_DISABLED")
+	Cast(172, "cast-7")
+	for _ = 1, 6 do
+		M.Advance(2.9)
+		A:Update(2.9)
+		M.Fire("UNIT_COMBAT", "nameplate7", "WOUND", "", 21.75, 32)
+	end
 	M.combat = false
 	M.Fire("PLAYER_REGEN_ENABLED")
-	eq(#gr.Coach:Plans()[2].steps, 6, "Siphon Life added after combat")
-	M.knownSpells["Siphon Life"] = nil
+	truthy(gr.db.dotMultiplier and math.abs(gr.db.dotMultiplier - 1.2) < 0.01,
+		"130.5 seen / 87 expected -> 1.5, blended to 1.2: " .. tostring(gr.db.dotMultiplier))
+	gr.db.dotMultiplier = nil
+	M.RemovePlate("nameplate7")
+end)
+
+test("assist: Shadow Trance proc asks for an instant Shadow Bolt; secret identity is tolerated", function()
+	M.AddPlate("nameplate8", Kobold("H", 900, { combat = true, target = "pet" }))
+	M.targetToken = "nameplate8"
+	M.Fire("PLAYER_TARGET_CHANGED")
+	M.combat = true
+	M.Fire("PLAYER_REGEN_DISABLED")
+	M.Fire("SPELL_ACTIVATION_OVERLAY_GLOW_SHOW", 686)
+	local rec = Rec()
+	eq(rec.spell, "Shadow Bolt")
+	eq(rec.rule, "nightfall")
+	M.Fire("SPELL_ACTIVATION_OVERLAY_GLOW_HIDE", 686)
+	M.secretIdentity = true
+	rec = Rec()
+	eq(rec.n, 1, "in combat and engaged even when who-it-attacks is hidden")
+	M.secretIdentity = false
+end)
+
+test("assist: the action button holding the spell lights up and names its key", function()
+	local button = CreateFrame("Button", "ActionButton3", UIParent)
+	button.action = 3
+	M.actions[3] = { "spell", 980 }
+	M.bindings["ACTIONBUTTON3"] = "SHIFT-3"
+	M.combat = false
+	M.Fire("ACTIONBAR_SLOT_CHANGED")
+	M.combat = true
+	eq(S:KeyFor("Bane of Agony"), "s3")
+	local rec = Rec()
+	eq(rec.spell, "Bane of Agony")
+	truthy(S.overlays[button] and S.overlays[button].shown, "glow shown")
+	M.bindings["CLICK GrimoireMain:LeftButton"] = nil
+	eq(A:KeyHint("Bane of Agony"), "s3", "without the one key, the bar key")
+end)
+
+test("assist: Destruction rules: Conflagrate as Immolate ends, Shadowburn to finish", function()
+	M.knownSpells["Conflagrate"] = { 17962, 135807 }
+	M.knownSpells["Shadowburn"] = { 17877, 136191 }
+	M.spellText["Shadowburn"] = "Instantly blasts the target for 120 Shadow damage."
+	M.spellCooldowns["Conflagrate"], M.spellCooldowns["Shadowburn"] = 10000, 15000
+	M.talents = { [105924] = 2, [105889] = 1 }
+	for nodeID, node in pairs(gr.TALENT_NODES) do
+		if node[1] == "Shadowburn" or node[1] == "Bane" then M.talents[nodeID] = 5 end
+	end
+	M.combat = false
+	M.Fire("SPELLS_CHANGED")
+	M.Fire("TRAIT_CONFIG_UPDATED")
+	eq(gr.Talents:Spec(), "Destruction")
+	truthy(C.roles.dot:GetAttribute("macrotext"):find("Immolate, Corruption, Bane of Agony, Shadow Bolt", 1, true), C.roles.dot:GetAttribute("macrotext"))
+	M.combat = true
+	local mob = A.byToken.nameplate8
+	M.Fire("PLAYER_TARGET_CHANGED")
+	Cast(348, "cast-8")   -- Immolate
+	M.Advance(13)
+	local rec = Rec()
+	eq(rec.spell, "Conflagrate", "two seconds of Immolate left")
+	A.cooldowns["Conflagrate"] = GetTime() + 10
+	M.itemCounts[6265] = 3
+	mob.sync = { health = 100, net = mob.taken - mob.healed }
+	mob.dots = {}
+	rec = Rec()
+	eq(rec.spell, "Shadowburn", "100 health left, Shadowburn hits for 120")
+	M.knownSpells["Conflagrate"], M.knownSpells["Shadowburn"] = nil, nil
+	M.talents = { [105924] = 2 }
+	M.combat = false
+	M.Fire("SPELLS_CHANGED")
+	M.Fire("TRAIT_CONFIG_UPDATED")
+	M.Fire("PLAYER_REGEN_ENABLED")
+end)
+
+test("hints: the game's curves light Health Funnel (demon below half) and Life Tap (low mana)", function()
+	M.units.pet.hp, M.units.pet.max = 40, 100
+	M.manaShare = 0.2
+	C:UpdateHints()
+	eq(C.frame.funnelHint.alpha, 1)
+	eq(C.frame.tapHint.alpha, 1)
+	M.units.pet.hp, M.manaShare = 90, 0.8
+	C:UpdateHints()
+	eq(C.frame.funnelHint.alpha, 0.2)
+	eq(C.frame.tapHint.alpha, 0.2)
 end)
 
 -- Trainer ---------------------------------------------------------------------------------------

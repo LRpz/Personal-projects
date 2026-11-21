@@ -32,7 +32,7 @@ ns.defaults = {
 	mobTooltips = true,         -- learned loot table lines on mob tooltips
 	showMinimap = true,
 	minimapAngle = 215,
-	durations = { consumable = 1, trade = 1, gear = 2, rare = 3, other = 2 }, -- 1 = 12h, 2 = 24h, 3 = 48h
+	durations = { consumable = 1, trade = 1, gear = 2, rare = 3, other = 2 }, -- 1 = short (2h), 2 = medium (8h), 3 = long (24h) on Forever
 	sellBoE = false,            -- also sell unbound bind-on-equip items when the vendor pays more
 	priorKills = 25,            -- weight of the public database, in kills, against personal kills
 	farmBelow = 6,              -- farming spots: creatures down to this many levels below yours
@@ -329,7 +329,7 @@ end
 
 -- Deposit per unit for the item's default duration. Rates are measured with the game's deposit
 -- functions whenever the auction house is open; until then 15% / 30% / 60% of the vendor price for
--- 12 h / 24 h / 48 h is assumed.
+-- the short / medium / long durations (2 h / 8 h / 24 h on Forever) is assumed.
 ns.DEFAULT_DEPOSIT = { 0.15, 0.30, 0.60 }
 
 function ns:ItemDuration(itemID)

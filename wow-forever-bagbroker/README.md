@@ -12,7 +12,7 @@ BagBroker is an addon for World of Warcraft: Forever (interface 16001, Mainline 
 
 ### 1 and 2. Vendor and auction prices on item tooltips
 
-Every auction value BagBroker displays or compares is net: the price minus the 5% auction cut minus the deposit for the item's default duration. Outside the auction house the deposit is estimated (15%, 30% and 60% of the vendor price for 12 h, 24 h and 48 h); each auction house visit measures the real rates with the game's deposit functions and the estimate converges to them.
+Every auction value BagBroker displays or compares is net: the price minus the 5% auction cut minus the deposit for the item's default duration. Outside the auction house the deposit is estimated (15%, 30% and 60% of the vendor price for the short, medium and long durations: 2 h, 8 h and 24 h on Forever); each auction house visit measures the real rates with the game's deposit functions and the estimate converges to them.
 
 Prices form an aligned block: labels on the left and money right-aligned, with every lower denomination present (zero-padded and dimmed), so gold, silver and copper line up vertically and values can be compared at a glance. When the game adds its own `Sell Price:` line, BagBroker restyles that line into the block instead of adding a duplicate.
 
@@ -58,11 +58,11 @@ Default durations follow item categories, and each category button at the top of
 
 | Category | Default |
 |---|---|
-| Consumables, reagents | 12 h |
-| Trade goods, gems | 12 h |
-| Bind-on-equip gear (common, uncommon) | 24 h |
-| Rare or better gear, recipes | 48 h |
-| Other | 24 h |
+| Consumables, reagents | Short (2 h) |
+| Trade goods, gems | Short (2 h) |
+| Bind-on-equip gear (common, uncommon) | Medium (8 h) |
+| Rare or better gear, recipes | Long (24 h) |
+| Other | Medium (8 h) |
 
 Selecting a row opens an editor in which the unit price can be typed (`1g 20s`, `35s`, `80c` or `1.5` for gold) and the duration of that item changed. **Auto** restores the suggested price. When the server requests confirmation for an unusual price, the button changes to **Confirm post** and the next click confirms.
 
@@ -162,20 +162,68 @@ When the mailbox opens, a panel docks to its right. It lists every bag item wort
 
 `Grimoire/` is a second addon for warlocks. Copy it next to `BagBroker/`; it uses BagBroker for the gear tab and works without it otherwise.
 
-### Combat coach
+### Combat assistant: spell queues on nameplates, the next spell and its key
 
-A panel at the side of the screen holds four situation buttons, a list of the steps of the selected plan with a one-line reason each (the next step highlighted), a utility row and a tip. Each press of a situation button casts that plan's next step; one key binding ("Coach: one key for all plans") drives all four plans, with Shift, Ctrl and Alt selecting plans 2 to 4. Steps that switch target put a raid icon on the new enemy, so each enemy's role stays visible: skull for the demon's target, cross, square and triangle for DoT targets, moon for the feared or seduced mob.
+Forever applies Midnight's addon rules: in combat no addon can read enemy health, auras, your health, your mana or the combat log, and no addon may cast for you. Three things stay readable, and Grimoire builds on them: your own casts, enemy nameplates, and the damage and heals each unit takes (`UNIT_COMBAT` amounts, the source Does It Die also relies on).
 
-| Demon | Plans | Utility row |
-|---|---|---|
-| Voidwalker | 1 mob; 2 mobs; 3 mobs (Fear the third); pack of 4 or 5 (Corruption on each, Howl of Terror, Suffering) | Health Funnel, Sacrifice, Fear, Death Coil, Life Tap, Drain Soul |
-| Succubus (Sayaad) | 1 mob (drain-tank); 2 humanoids (Seduction); 3 mobs (Seduction and Fear); pack: switch demon | Seduction, Fear, Death Coil, Health Funnel, Life Tap, Drain Soul |
-| Felhunter | 1 mob; caster (Spell Lock); 2 mobs (Fear one); pack: switch demon | Spell Lock, Devour Magic, Fear, Death Coil, Health Funnel, Life Tap |
-| Imp | 1 mob; 2 mobs (Fear one); group play; pack: switch demon | Fire Shield, Fear, Death Coil, Health Funnel, Life Tap, Drain Soul |
+**What it tracks, per enemy.**
 
-Only spells you know are included (Immolate drops out at 30, Siphon Life and Howl of Terror appear when learned), and the plans rebuild after combat when your spells or demon change. Right-click a plan button to restart it; plans also restart when combat ends.
+- **Your DoTs and control spells**, with timers from each spell's tooltip at your rank.
+- **Whether each cast landed.** The DoT's first tick on that enemy confirms it (green bar under its icon). A "Resist" or "Immune" right after the cast removes it and puts the spell back first in that enemy's queue. Damage on a feared or seduced enemy marks the control as broken.
+- **Its health.** The maximum is read while the game allows it (before the pull) or learned from earlier kills of the same creature and level. The damage it has taken since is subtracted.
+- **The damage your running DoTs will still deal.** This comes from tooltip damage, with Agony's ramp (weak ticks first). A correction learned after each fight from the ticks you actually see accounts for spell power and talents.
 
-What adapts, and what cannot: the game evaluates macro conditions at every press, so a step picks a new enemy when your target is missing, dead or friendly, sends the demon only at a living enemy, and casts only on a living enemy. Forever applies Midnight's addon rules, so in combat no addon can read enemy health, debuffs, crits, misses or the combat log, or change what a button casts; Blizzard also prohibits automated decision-making beyond one fixed action per key press. A fully situational one-key rotation is therefore not possible as an addon. When the client offers Blizzard's own Assisted Combat (the Single-Button Assistant of the Mainline client), the coach shows its live suggestion, which the game itself computes.
+**Your own health and your demon's** are estimated the same way from the damage and heals they take (and Life Tap's cost). They are read whenever the game allows it, and a fresh summon or a rested demon counts as full.
+
+**On each enemy's nameplate** you get:
+- the spells to cast on it, in order;
+- the DoTs running on it, with confirmed or waiting bars;
+- a note: *resisted*, *Fear broken*, the Fear time left, or a skull with *dies* when your DoTs already finish it.
+
+The enemy to act on next glows, marked NOW (your target) or NEXT (switch: Tab or click it). The action button holding the recommended spell lights up. The coach window shows:
+- the spell, where and why, and the key that casts it;
+- what follows;
+- the pull-size advice for your demon;
+- warnings;
+- your spec and the health estimates.
+
+**Rotation per specialization.** The spec is the talent tree with the most points (all 52 Forever nodes, from the game files). Rules come from the current Forever levelling guides:
+
+| Spec | Order | Filler | Specific rules |
+|---|---|---|---|
+| Affliction (Wowhead, Mobalytics) | Bane of Agony (with Amplify Curse) if the enemy lives long enough to ramp, Corruption on every enemy, Siphon Life once talented, Immolate only on high-health enemies | Drain Life when below 70% or with Soul Siphon, otherwise the wand | Shadow Trance (Nightfall): instant Shadow Bolt |
+| Demonology (Wowhead, Warcraft Tavern, Mobalytics) | Corruption, Bane of Agony and Immolate by how long the enemy lives | Wand before 30, Drain Life from 30 (or when below 60%) | With Demonic Brand: Searing Pain on the demon's target whenever the brand has fallen off (never before the talent) |
+| Destruction (Wowhead, Icy Veins) | Immolate, Corruption, Bane of Agony on long fights | Incinerate on burning enemies (40+), Shadow Bolt; Drain Life below 50% | Conflagrate in the last 3 seconds of Immolate; Shadowburn when it finishes the enemy (keeps 1 shard) |
+
+**Situation rules for every spec, in priority order** (thresholds in `ns.THRESHOLDS`):
+1. Voidwalker Sacrifice below 25% of your health.
+2. Death Coil on the enemy hitting you below 35%.
+3. Howl of Terror when 3 enemies hit you.
+4. Fear or Seduction for the enemy beyond your demon's capacity. Capacity: Voidwalker 2, or 3 with Siphon Life; other demons 1. The pick is never an enemy carrying DoTs or the demon's target, and prefers the one hitting you.
+5. Health Funnel when your demon is below half and you are above half.
+6. Procs.
+7. Executes.
+8. Then the DoT queues, then the filler.
+
+The filler is chosen from your health and from whether your DoTs already kill the enemy (wand then). Drain Soul is used when the enemy will die during the channel and you carry fewer shards than `/grim shards` (default 5). Every DoT is skipped when the enemy will not live long enough for it to pay off. When a health estimate is not available yet, long DoT icons fade on low enemies and a Drain Soul icon appears below 25%. The game draws these from its own health curve, so the addon never sees the value.
+
+**The one key.** Bind "Coach: one key" (Key Bindings, AddOns, Grimoire). It drives four secure buttons:
+
+| Key | Does |
+|---|---|
+| No modifier | Picks an enemy when you have none, sends your demon when it has no target, then `/castsequence` through your spec's DoTs and filler. `/castsequence` only advances when a spell is actually cast (not when pressed during the global cooldown, out of range or while channelling) and starts over on a new target |
+| Shift | Filler (Drain Life, or Shadow Bolt / wand by spec and level) |
+| Ctrl | Control: Seduction with the Succubus out, otherwise Fear |
+| Alt | Health Funnel (Death Coil without a demon) |
+
+Each press casts at most one spell and the game checks every condition, as Blizzard requires (one key press, one action). The coach names the key for each recommendation: the one key when its next cast matches, otherwise the action-bar key that holds the spell. Macros rebuild out of combat when your spells, demon, level or talents change.
+
+**Limits.**
+- Health estimates need a first look at the enemy's maximum or one full kill of its kind.
+- Hits by other players are counted only when the game reports them on that enemy.
+- If the client reports damage only for your target (not nameplates), enemies you do not target keep a conservative (too high) estimate, so nothing is wrongly marked as dying.
+- Mana stays hidden, so Life Tap is a hint lit by the game's mana curve, not a rule.
+- `/castsequence` on the Forever client has not been tested in game.
 
 ### Talent plan, trainer and tips
 
@@ -190,6 +238,11 @@ At the auction house, BagBroker's panel gains a **Gear** tab. For each equipment
 | Command | Effect |
 |---|---|
 | `/grim coach` | Show or hide the coach (out of combat) |
+| `/grim assist on\|off` | Live recommendations |
+| `/grim plates on\|off` | Spell queues on enemy nameplates |
+| `/grim glow on\|off` | Light up the action button to press |
+| `/grim shards <n>` | Drain Soul finishes while you carry fewer Soul Shards than this |
+| `/grim forget` | Forget learned enemy health and DoT damage |
 | `/grim talents` | Talent plan, demons and tips |
 | `/grim budget <price>\|auto` | Gear budget per item |
 | `/grim scale <0.6-1.5>` | Coach size |
@@ -242,7 +295,7 @@ python3 tools/build_farm_data.py
 
 ## Testing
 
-The repository includes a mock of the game API, 43 behavioural tests for BagBroker and 12 for Grimoire (`lua5.1 tests/run_grimoire_tests.lua`: talent plan validity against the tree, coach sequences and macro conditions, demon switching, the trainer panel, gear capture in scans and the gear tab), which load the addon files in TOC order under Lua 5.1, the language version embedded in the client:
+The repository includes a mock of the game API, 43 behavioural tests for BagBroker and 23 for Grimoire (`lua5.1 tests/run_grimoire_tests.lua`: talent plan validity against the tree, tooltip parsing, spec detection, the one-key macros per spec and demon, the assistant's queues, cast confirmation and resists, Fear and its breaks, enemies that die to DoTs, health estimates and learning, the DoT damage correction, your and your demon's health rules, procs, Destruction executes, action-button keys and glow, the curve-driven hints, the trainer panel, gear capture in scans and the gear tab), which load the addon files in TOC order under Lua 5.1, the language version embedded in the client:
 
 ```
 lua5.1 tests/run_tests.lua

@@ -10,7 +10,8 @@ ns.Panel = Panel
 local WIDTH = 390
 local ROW_HEIGHT = 22
 local LIVE_TTL = 300
-local DURATION_LABELS = { "12h", "24h", "48h" }
+-- Forever auction durations (Auctionator's Forever source): short 2 h, medium 8 h, long 24 h.
+local DURATION_LABELS = { "2h", "8h", "24h" }
 local CATEGORIES = { "consumable", "trade", "gear", "rare", "other" }
 local CATEGORY_LABELS = {
 	consumable = "Consumables", trade = "Trade goods", gear = "BoE gear", rare = "Rare+ / recipes", other = "Other",
@@ -478,7 +479,7 @@ function Panel:CreateEditor(f)
 	local durLabel = ed:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	durLabel:SetPoint("TOPLEFT", 0, -50)
 	durLabel:SetText("Duration:")
-	ed.durButton = CreateButton(ed, "24h", 52, nil)
+	ed.durButton = CreateButton(ed, "8h", 52, nil)
 	ed.durButton:SetPoint("TOPLEFT", 72, -45)
 	ed.durButton:RegisterForClicks("LeftButtonUp", "RightButtonUp")
 	ed.durButton:SetScript("OnClick", function(_, button) self:CycleRowDuration(button == "RightButton" and -1 or 1) end)

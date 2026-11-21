@@ -43,6 +43,34 @@ function Talents:Status(level, ranks)
 	return out, spent, available
 end
 
+-- Talent ranks by name and points per tree, cached until the talents change.
+function Talents:Cache()
+	if not self.cache then
+		self.cache = { ranks = {}, trees = { Affliction = 0, Demonology = 0, Destruction = 0 } }
+		local ranks = self:LearnedRanks() or {}
+		for nodeID, node in pairs(ns.TALENT_NODES) do
+			local r = ranks[nodeID] or 0
+			if r > 0 then
+				self.cache.ranks[node[1]] = r
+				self.cache.trees[node[2]] = (self.cache.trees[node[2]] or 0) + r
+			end
+		end
+	end
+	return self.cache
+end
+
+function Talents:Has(name) return (self:Cache().ranks[name] or 0) > 0 end
+function Talents:Rank(name) return self:Cache().ranks[name] or 0 end
+
+-- Specialization: the tree with the most points (Affliction before any point, as guides advise).
+function Talents:Spec()
+	local trees, best = self:Cache().trees, "Affliction"
+	for _, tree in ipairs({ "Affliction", "Demonology", "Destruction" }) do
+		if trees[tree] > trees[best] then best = tree end
+	end
+	return best
+end
+
 function Talents:NextSteps(level, ranks)
 	local steps = self:Status(level, ranks)
 	local due = {}
@@ -141,6 +169,7 @@ function Talents:Toggle()
 end
 
 ns:RegisterEvent("PLAYER_LEVEL_UP", function(_, newLevel)
+	Talents.cache = nil
 	if not ns.isWarlock or not ns.settings.talentReminders then return end
 	C_Timer.After(2, function()
 		local due = Talents:NextSteps(tonumber(newLevel) or UnitLevel("player"), Talents:LearnedRanks())
@@ -153,5 +182,6 @@ ns:RegisterEvent("PLAYER_LEVEL_UP", function(_, newLevel)
 end)
 
 ns:RegisterEvent("TRAIT_CONFIG_UPDATED", function()
+	Talents.cache = nil
 	if Talents.frame and Talents.frame:IsShown() then Talents:Refresh() end
 end)

@@ -1,4 +1,5 @@
--- Grimoire: guide data for an Affliction warlock levelling in WoW Forever.
+-- Grimoire: guide data for a warlock levelling in WoW Forever (talent plan for Affliction, rotation
+-- rules for all three specializations).
 -- Talent nodes and ranks come from the Forever game files (build 1.60.1.70959, read through
 -- Everloot's talent_tree tool). The order follows the consensus of current Forever guides:
 --   * Wowhead (updated 2026-11-11): instant Corruption first, then Suppression; Affliction-heavy at 40.
@@ -8,7 +9,8 @@
 -- Edit TALENT_PLAN to follow another build; the tests check that every step respects the tree.
 local _, ns = ...
 
--- [nodeID] = { name, tree, row, maxRanks, pointsRequiredInTree }
+-- [nodeID] = { name, tree, row, maxRanks, pointsRequiredInTree }; all three trees (the spec is the
+-- tree with the most points).
 ns.TALENT_NODES = {
 	[105921] = { "Improved Life Tap", "Affliction", 1, 2, 0 },
 	[105925] = { "Suppression", "Affliction", 1, 5, 0 },
@@ -35,7 +37,33 @@ ns.TALENT_NODES = {
 	[105904] = { "Improved Voidwalker", "Demonology", 2, 3, 5 },
 	[105903] = { "Fel Vitality", "Demonology", 2, 3, 5 },
 	[105899] = { "Demonic Energies", "Demonology", 2, 2, 5 },
+	[105901] = { "Improved Sayaad", "Demonology", 3, 3, 10 },
 	[105900] = { "Demonic Sacrifice", "Demonology", 3, 1, 10 },
+	[105898] = { "Master Summoner", "Demonology", 3, 2, 10 },
+	[105897] = { "Decimation", "Demonology", 4, 2, 15 },
+	[105895] = { "Fel Domination", "Demonology", 4, 1, 15 },
+	[105896] = { "Demonic Brand", "Demonology", 4, 3, 15 },
+	[105894] = { "Improved Felhunter", "Demonology", 5, 3, 20 },
+	[105892] = { "Soul Link", "Demonology", 5, 1, 20 },
+	[105893] = { "Demonic Knowledge", "Demonology", 5, 3, 20 },
+	[105891] = { "Master Demonologist", "Demonology", 6, 5, 25 },
+	[105890] = { "Demonic Pact", "Demonology", 7, 1, 30 },
+	[105881] = { "Destructive Reach", "Destruction", 1, 2, 0 },
+	[105889] = { "Improved Shadow Bolt", "Destruction", 1, 5, 0 },
+	[105888] = { "Bane", "Destruction", 1, 5, 0 },
+	[105885] = { "Molten Skin", "Destruction", 2, 5, 5 },
+	[105887] = { "Cataclysm", "Destruction", 2, 3, 5 },
+	[105886] = { "Aftermath", "Destruction", 2, 5, 5 },
+	[105883] = { "Ruin", "Destruction", 3, 5, 10 },
+	[105884] = { "Shadowburn", "Destruction", 3, 1, 10 },
+	[105882] = { "Intensity", "Destruction", 4, 3, 15 },
+	[105879] = { "Agonizing Flames", "Destruction", 4, 3, 15 },
+	[105880] = { "Conflagrate", "Destruction", 4, 1, 15 },
+	[105878] = { "Pyroclasm", "Destruction", 5, 2, 20 },
+	[105876] = { "Bane of Havoc", "Destruction", 5, 1, 20 },
+	[105877] = { "Fire and Brimstone", "Destruction", 5, 3, 20 },
+	[105875] = { "Shadow and Flame", "Destruction", 6, 5, 25 },
+	[105874] = { "Incinerate", "Destruction", 7, 1, 30 },
 }
 
 -- One entry per talent point: { level, nodeID, rank, why }.
@@ -106,104 +134,127 @@ ns.TRAINER = {
 	["Eye of Kilrogg"] = { "skip", "rarely needed" },
 }
 
--- Situation plans for the coach buttons, per demon. Each step: spell (English name), mark (raid
--- icon index), next (switch to the next enemy first), pet ("attack"), petSpell (a demon ability),
--- text, maxLevel (optional). Opener steps run once per fight; loop steps repeat; plans reset when
--- combat ends. Four plans per demon (the four coach buttons) plus six utility spells.
-local SINGLE_OPENER = {
-	{ spell = "Bane of Agony", mark = 8, pet = "attack", text = "Send your demon, open with Bane of Agony" },
-	{ spell = "Corruption", text = "Instant Corruption" },
-	{ spell = "Siphon Life", text = "Siphon Life (heals you)" },
-	{ spell = "Immolate", maxLevel = 29, text = "Immolate while below 30" },
+-- DoTs in the order the assistant applies them. Damage and duration are read from each spell's
+-- tooltip at your rank (these values are only fallbacks); ticks: Agony ramps up (weights per tick).
+-- minHealthShare: skip the DoT when the enemy has less health left than this share of its damage.
+ns.DOTS = {
+	{ spell = "Corruption", school = 32, duration = 18, damage = 0, minHealthShare = 0.35 },
+	{ spell = "Bane of Agony", school = 32, duration = 24, damage = 0, minHealthShare = 0.5, ramp = true },
+	{ spell = "Curse of Agony", school = 32, duration = 24, damage = 0, minHealthShare = 0.5, ramp = true },
+	{ spell = "Siphon Life", school = 32, duration = 30, damage = 0, minHealthShare = 0.5 },
+	{ spell = "Immolate", school = 4, duration = 15, damage = 0, minHealthShare = 0.35, maxLevel = 29 },
 }
-local DRAIN_LOOP = { { spell = "Drain Life", text = "Drain Life until it dies" } }
+-- Rotation per specialization, from the current Forever levelling guides:
+--   Affliction: Wowhead (Affliction levelling tips, November 2026) and Mobalytics (Kargoz 1-60):
+--     Bane of Agony first on enemies that live long enough to ramp up (with Amplify Curse when
+--     talented), Corruption on every enemy, Siphon Life once talented, Immolate only on high-health
+--     enemies; wand or Drain Life as filler (Drain Life when hurt, always with Soul Siphon);
+--     Shadow Trance (Nightfall) procs: instant Shadow Bolt; Fear the extra enemy, re-Fear it.
+--   Demonology: Wowhead (Demonology levelling tips), Warcraft Tavern, Mobalytics: with Demonic
+--     Brand, Searing Pain on the demon's target whenever the brand has fallen off (never before
+--     the talent: it pulls threat); Corruption, Bane of Agony or Immolate depending on how long the
+--     enemy lives; wand before 30, Drain Life (rank 3+) from 30.
+--   Destruction: Wowhead (Destruction levelling tips), Icy Veins: Immolate and DoTs, Conflagrate
+--     near the end of Immolate (25+), Shadowburn to finish (20+), Shadow Bolt filler, Incinerate
+--     on burning enemies from 40; wand or Drain Life when low.
+-- lives: cast the DoT only when the enemy's health left after your running DoTs is at least this
+-- share of the DoT's damage (1 = it must survive the whole DoT). with: cast first when ready.
+ns.ROTATIONS = {
+	Affliction = {
+		dots = {
+			{ spell = "Bane of Agony", lives = 0.5, with = "Amplify Curse" },
+			{ spell = "Curse of Agony", lives = 0.5, with = "Amplify Curse" },
+			{ spell = "Corruption", lives = 0.3 },
+			{ spell = "Siphon Life", lives = 0.5 },
+			{ spell = "Immolate", lives = 1.0 },
+		},
+	},
+	Demonology = {
+		brand = true,
+		dots = {
+			{ spell = "Corruption", lives = 0.3 },
+			{ spell = "Bane of Agony", lives = 0.6 },
+			{ spell = "Curse of Agony", lives = 0.6 },
+			{ spell = "Immolate", lives = 1.0 },
+		},
+	},
+	Destruction = {
+		dots = {
+			{ spell = "Immolate", lives = 0.4 },
+			{ spell = "Corruption", lives = 0.4 },
+			{ spell = "Bane of Agony", lives = 0.8 },
+			{ spell = "Curse of Agony", lives = 0.8 },
+		},
+	},
+}
 
-ns.PET_PLANS = {}
+-- Situation thresholds used by the rules (shares of maximum health).
+ns.THRESHOLDS = {
+	sacrifice = 0.25,     -- your health: Voidwalker Sacrifice
+	deathCoil = 0.35,     -- your health: Death Coil the enemy hitting you
+	funnelPet = 0.5,      -- demon health: Health Funnel (Wowhead: below half)
+	funnelSelf = 0.5,     -- ... only while you stay above this
+	drainBelow = 0.7,     -- your health: Drain Life rather than the wand (Affliction)
+	drainBelowDemo = 0.6, -- Demonology before 30
+	drainBelowDestro = 0.5,
+	howlOnYou = 3,        -- enemies hitting you: Howl of Terror
+	brand = 10,           -- seconds Demonic Brand lasts
+	conflagrate = 3,      -- seconds of Immolate left: Conflagrate
+	shardReserve = 1,     -- Soul Shards kept before Shadowburn
+}
 
-ns.PET_PLANS.Voidwalker = {
+ns.DOT_BY_NAME = {}
+for _, dot in ipairs(ns.DOTS) do ns.DOT_BY_NAME[dot.spell] = dot end
+
+-- Agony deals half damage for the first third, full for the second, one and a half for the last.
+ns.AGONY_WEIGHTS = { 0.5, 0.5, 0.5, 0.5, 1, 1, 1, 1, 1.5, 1.5, 1.5, 1.5 }
+
+-- Control spells: take an extra enemy out of the fight (broken by damage, so never on a DoTed enemy).
+ns.CONTROL = {
+	["Fear"] = { duration = 15, school = 32 },
+	["Seduction"] = { duration = 15, school = 32, pet = true, humanoid = true },
+}
+
+-- Direct spells (their hits are not DoT ticks when confirming DoTs or learning DoT damage).
+ns.DIRECT = { ["Shadow Bolt"] = true, ["Death Coil"] = true, ["Shadowburn"] = true, ["Drain Life"] = true,
+	["Drain Soul"] = true, ["Searing Pain"] = true, ["Conflagrate"] = true, ["Incinerate"] = true, ["Soul Fire"] = true }
+
+ns.SOUL_SHARD = 6265
+
+-- Per demon: how many enemies you fight at once (capacity, plus one with Siphon Life for the
+-- Voidwalker), which control spells take the next ones out, what to do per pull size, and the
+-- utility row. Spell names are English, as on the Forever client.
+ns.PET_SETS = {}
+
+ns.PET_SETS.Voidwalker = {
 	advice = "Voidwalker: the solo tank. Best for pulling several mobs.",
-	plans = {
-		{ key = "single", label = "1", title = "One mob",
-			tip = "Voidwalker tanks, DoTs tick, Drain Life keeps you topped up. Wand instead of draining when healthy.",
-			opener = SINGLE_OPENER, loop = DRAIN_LOOP },
-		{ key = "two", label = "2", title = "Two mobs",
-			tip = "Both mobs on the Voidwalker; DoT both, drain the second. Health Funnel the Voidwalker below half health.",
-			opener = {
-				{ spell = "Bane of Agony", mark = 8, pet = "attack", text = "Skull: Voidwalker's target, Bane of Agony" },
-				{ spell = "Corruption", text = "Skull: Corruption" },
-				{ spell = "Bane of Agony", mark = 7, next = true, text = "Cross: next mob, Bane of Agony" },
-				{ spell = "Corruption", text = "Cross: Corruption" },
-				{ spell = "Siphon Life", text = "Cross: Siphon Life" },
-			},
-			loop = { { spell = "Drain Life", text = "Drain Life the current mob" } } },
-		{ key = "three", label = "3", title = "Three mobs",
-			tip = "Fear the third right away, kill the other two on the Voidwalker, re-Fear (utility row) when it returns.",
-			opener = {
-				{ spell = "Corruption", mark = 8, pet = "attack", text = "Skull: Voidwalker's target, Corruption" },
-				{ spell = "Fear", mark = 5, next = true, text = "Moon: next mob, Fear it out of the fight" },
-				{ spell = "Corruption", mark = 7, next = true, text = "Cross: next mob, Corruption (tab again if Moon)" },
-				{ spell = "Bane of Agony", text = "Cross: Bane of Agony" },
-				{ spell = "Siphon Life", text = "Cross: Siphon Life" },
-			},
-			loop = { { spell = "Drain Life", text = "Drain Life the current mob" } } },
-		{ key = "pack", label = "4+", title = "Pack of 4 or 5",
-			tip = "Needs Siphon Life (30) and Howl of Terror (40). Spread Corruption, Howl when they reach you, Suffering pulls them back to the Voidwalker.",
-			opener = {
-				{ spell = "Corruption", mark = 8, pet = "attack", text = "Skull: Voidwalker's target, Corruption" },
-				{ spell = "Corruption", mark = 7, next = true, text = "Cross: Corruption" },
-				{ spell = "Corruption", mark = 6, next = true, text = "Square: Corruption" },
-				{ spell = "Corruption", mark = 4, next = true, text = "Triangle: Corruption" },
-				{ spell = "Siphon Life", text = "Siphon Life on the current mob" },
-				{ spell = "Howl of Terror", text = "When they reach you: Howl of Terror" },
-				{ spell = "Suffering", petSpell = true, text = "Voidwalker Suffering: taunts everything back" },
-			},
-			loop = {
-				{ spell = "Bane of Agony", next = true, text = "Next mob: Bane of Agony" },
-				{ spell = "Drain Life", text = "Drain Life" },
-			} },
+	capacity = 2, siphonBonus = 1,
+	control = { "Fear" },
+	playbook = {
+		"One enemy: the Voidwalker tanks, DoTs tick, Drain Life keeps you topped up.",
+		"Two enemies: both on the Voidwalker; DoT both, drain the one hitting you. Funnel the Voidwalker below half health.",
+		"Three: Fear the extra one, kill the others on the Voidwalker, Fear it again when it comes back.",
+		"Pack: spread Corruption, Howl of Terror when they reach you, Suffering pulls them back to the Voidwalker.",
 	},
 	utility = {
 		{ spell = "Health Funnel", text = "Heal the Voidwalker (use below half health)" },
 		{ spell = "Sacrifice", petSpell = true, text = "Voidwalker shield when overwhelmed" },
-		{ spell = "Fear", text = "Fear the current target" },
+		{ spell = "Suffering", petSpell = true, text = "Voidwalker taunts everything nearby" },
 		{ spell = "Death Coil", text = "Emergency fear and heal" },
 		{ spell = "Life Tap", text = "Health to mana (out of danger)" },
-		{ spell = "Drain Soul", text = "Finish with Drain Soul for a shard" },
+		{ spell = "Howl of Terror", text = "Fear every enemy around you" },
 	},
 }
 
-ns.PET_PLANS.Succubus = {
-	advice = "Succubus: more damage, no tank. Seduction locks a humanoid out of the fight; switch to the Voidwalker for packs.",
-	plans = {
-		{ key = "single", label = "1", title = "One mob",
-			tip = "The Succubus adds damage while you take the hits: drain-tank with Drain Life, kills are faster than with the Voidwalker.",
-			opener = SINGLE_OPENER, loop = DRAIN_LOOP },
-		{ key = "seduce", label = "2", title = "Two humanoids",
-			tip = "Target the add first: Seduction holds it (humanoids only). Kill the other; re-Seduce when it breaks. Never DoT the seduced mob.",
-			opener = {
-				{ spell = "Seduction", petSpell = true, mark = 5, text = "Moon: current target, Seduction" },
-				{ spell = "Bane of Agony", mark = 8, next = true, text = "Skull: next mob, Bane of Agony" },
-				{ spell = "Corruption", text = "Skull: Corruption" },
-				{ spell = "Siphon Life", text = "Skull: Siphon Life" },
-			},
-			loop = DRAIN_LOOP },
-		{ key = "three", label = "3", title = "Three mobs",
-			tip = "Seduce one humanoid, Fear another, kill the third. Tight: keep Death Coil ready.",
-			opener = {
-				{ spell = "Seduction", petSpell = true, mark = 5, text = "Moon: current target, Seduction" },
-				{ spell = "Fear", mark = 6, next = true, text = "Square: next mob, Fear" },
-				{ spell = "Bane of Agony", mark = 8, next = true, text = "Skull: next mob, Bane of Agony" },
-				{ spell = "Corruption", text = "Skull: Corruption" },
-				{ spell = "Siphon Life", text = "Skull: Siphon Life" },
-			},
-			loop = DRAIN_LOOP },
-		{ key = "pack", label = "4+", title = "Pack: switch demon",
-			tip = "Packs need a tank: summon the Voidwalker. In an emergency: Howl of Terror, Death Coil, run.",
-			opener = {
-				{ spell = "Howl of Terror", text = "Howl of Terror" },
-				{ spell = "Death Coil", text = "Death Coil the closest mob" },
-			},
-			loop = DRAIN_LOOP },
+ns.PET_SETS.Succubus = {
+	advice = "Succubus: more damage, no tank. Seduction locks a humanoid out; switch to the Voidwalker for packs.",
+	capacity = 1,
+	control = { "Seduction", "Fear" },
+	playbook = {
+		"One enemy: the Succubus adds damage while you drain-tank with Drain Life.",
+		"Two: Seduce the humanoid (or Fear the other one), kill the rest. Never DoT the controlled enemy.",
+		"Three: Seduce one, Fear one, kill the third. Tight: keep Death Coil ready.",
+		"Pack: summon the Voidwalker. In an emergency: Howl of Terror, Death Coil, run.",
 	},
 	utility = {
 		{ spell = "Seduction", petSpell = true, text = "Seduce the current target (humanoids)" },
@@ -211,41 +262,19 @@ ns.PET_PLANS.Succubus = {
 		{ spell = "Death Coil", text = "Emergency fear and heal" },
 		{ spell = "Health Funnel", text = "Heal your demon" },
 		{ spell = "Life Tap", text = "Health to mana (out of danger)" },
-		{ spell = "Drain Soul", text = "Finish with Drain Soul for a shard" },
+		{ spell = "Howl of Terror", text = "Fear every enemy around you" },
 	},
 }
 
-ns.PET_PLANS.Felhunter = {
+ns.PET_SETS.Felhunter = {
 	advice = "Felhunter: answers casters. Spell Lock interrupts heals and big spells, Devour Magic strips buffs.",
-	plans = {
-		{ key = "single", label = "1", title = "One mob",
-			tip = "Felhunter fights while you DoT and drain.",
-			opener = SINGLE_OPENER, loop = DRAIN_LOOP },
-		{ key = "caster", label = "Cast", title = "Caster",
-			tip = "Let the caster start a heal or a big spell, then press Spell Lock (utility row or this plan's step 2).",
-			opener = {
-				{ spell = "Bane of Agony", mark = 8, pet = "attack", text = "Skull: Bane of Agony, demon attacks" },
-				{ spell = "Spell Lock", petSpell = true, text = "Spell Lock when it casts" },
-				{ spell = "Corruption", text = "Corruption" },
-				{ spell = "Siphon Life", text = "Siphon Life" },
-			},
-			loop = DRAIN_LOOP },
-		{ key = "two", label = "2", title = "Two mobs",
-			tip = "Fear one, kill the other with the Felhunter.",
-			opener = {
-				{ spell = "Fear", mark = 5, text = "Moon: current target, Fear" },
-				{ spell = "Bane of Agony", mark = 8, next = true, pet = "attack", text = "Skull: next mob, Bane of Agony" },
-				{ spell = "Corruption", text = "Skull: Corruption" },
-				{ spell = "Siphon Life", text = "Skull: Siphon Life" },
-			},
-			loop = DRAIN_LOOP },
-		{ key = "pack", label = "4+", title = "Pack: switch demon",
-			tip = "Packs need a tank: summon the Voidwalker.",
-			opener = {
-				{ spell = "Howl of Terror", text = "Howl of Terror" },
-				{ spell = "Death Coil", text = "Death Coil the closest mob" },
-			},
-			loop = DRAIN_LOOP },
+	capacity = 1,
+	control = { "Fear" },
+	playbook = {
+		"One enemy: the Felhunter fights while you DoT and drain; Spell Lock its heals.",
+		"Two: Fear one, kill the other with the Felhunter.",
+		"Three: Fear one and expect to drain-tank; Death Coil if it gets close.",
+		"Pack: summon the Voidwalker.",
 	},
 	utility = {
 		{ spell = "Spell Lock", petSpell = true, text = "Interrupt the current target" },
@@ -257,36 +286,15 @@ ns.PET_PLANS.Felhunter = {
 	},
 }
 
-ns.PET_PLANS.Imp = {
+ns.PET_SETS.Imp = {
 	advice = "Imp: no tank. Fine for groups (Blood Pact Stamina); solo, one mob at a time or switch to the Voidwalker.",
-	plans = {
-		{ key = "single", label = "1", title = "One mob",
-			tip = "The Imp cannot tank: DoT, drain, and Fear if it reaches you.",
-			opener = SINGLE_OPENER, loop = DRAIN_LOOP },
-		{ key = "two", label = "2", title = "Two mobs",
-			tip = "Fear one, kill the other.",
-			opener = {
-				{ spell = "Fear", mark = 5, text = "Moon: current target, Fear" },
-				{ spell = "Bane of Agony", mark = 8, next = true, pet = "attack", text = "Skull: next mob, Bane of Agony" },
-				{ spell = "Corruption", text = "Skull: Corruption" },
-				{ spell = "Siphon Life", text = "Skull: Siphon Life" },
-			},
-			loop = DRAIN_LOOP },
-		{ key = "group", label = "Grp", title = "Group play",
-			tip = "In a group, let the tank hold aggro: DoT the tank's target, avoid Fear, Life Tap freely.",
-			opener = {
-				{ spell = "Corruption", text = "Corruption on the tank's target" },
-				{ spell = "Bane of Agony", text = "Bane of Agony" },
-				{ spell = "Siphon Life", text = "Siphon Life" },
-			},
-			loop = { { spell = "Shadow Bolt", text = "Shadow Bolt" } } },
-		{ key = "pack", label = "4+", title = "Pack: switch demon",
-			tip = "Packs need a tank: summon the Voidwalker.",
-			opener = {
-				{ spell = "Howl of Terror", text = "Howl of Terror" },
-				{ spell = "Death Coil", text = "Death Coil the closest mob" },
-			},
-			loop = DRAIN_LOOP },
+	capacity = 1,
+	control = { "Fear" },
+	playbook = {
+		"One enemy: DoT, drain, and Fear it if it reaches you while you are low.",
+		"Two: Fear one, kill the other.",
+		"Three: too many without a tank: Fear, Death Coil, and summon the Voidwalker next time.",
+		"Pack: summon the Voidwalker.",
 	},
 	utility = {
 		{ spell = "Fire Shield", petSpell = true, text = "Fire Shield on yourself or an ally" },
@@ -298,8 +306,8 @@ ns.PET_PLANS.Imp = {
 	},
 }
 
--- Without a demon out, the Imp plans (no tank) apply.
-ns.PET_PLANS.none = ns.PET_PLANS.Imp
+-- Without a demon out, the Imp set (no tank) applies.
+ns.PET_SETS.none = ns.PET_SETS.Imp
 ns.PET_ALIASES = { Sayaad = "Succubus", Incubus = "Succubus", Succubus = "Succubus", Voidwalker = "Voidwalker",
 	Felhunter = "Felhunter", Imp = "Imp" }
 
@@ -310,10 +318,6 @@ ns.DEMON_ADVICE = {
 	"Felhunter: casters and healers (Spell Lock, Devour Magic).",
 	"Imp: groups and dungeons (Blood Pact Stamina), or when you will not pull more than one mob.",
 }
-
--- Compatibility: the first set is also exposed as ns.PLANS / ns.UTILITY.
-ns.PLANS = ns.PET_PLANS.Voidwalker.plans
-ns.UTILITY = ns.PET_PLANS.Voidwalker.utility
 
 ns.TIPS = {
 	"Your demon scales with your stats in Forever: Stamina makes the Voidwalker tougher too.",

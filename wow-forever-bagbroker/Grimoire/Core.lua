@@ -3,6 +3,46 @@ local ADDON_NAME, ns = ...
 
 local issecret = issecretvalue or function() return false end
 function ns.IsSecret(value) return value ~= nil and issecret(value) and true or false end
+-- The value when the game lets addons read it, else nil.
+function ns.Readable(value) if value == nil or issecret(value) then return nil end return value end
+-- True only for a readable true value.
+function ns.IsTrue(value) return value ~= nil and not issecret(value) and value and true or false end
+
+-- A curve the game evaluates on a unit's health or mana share (0 to 1): "below" under the
+-- threshold, "above" from it on. The result can drive a widget's alpha even when the share is
+-- secret: the game draws it, the addon never learns the value (Blizzard's Midnight pattern).
+function ns.StepCurve(threshold, below, above)
+	if not (C_CurveUtil and C_CurveUtil.CreateCurve) then return nil end
+	local ok, curve = pcall(C_CurveUtil.CreateCurve)
+	if not ok or not curve then return nil end
+	if Enum and Enum.LuaCurveType and Enum.LuaCurveType.Step and curve.SetType then
+		curve:SetType(Enum.LuaCurveType.Step)
+		curve:AddPoint(0, below)
+		curve:AddPoint(threshold, above)
+	else
+		curve:AddPoint(0, below)
+		curve:AddPoint(math.max(0, threshold - 0.005), below)
+		curve:AddPoint(threshold, above)
+		curve:AddPoint(1, above)
+	end
+	return curve
+end
+
+-- Sets a region's alpha from getter(curve); falls back to a fixed alpha when the client lacks
+-- curves or refuses the value (then curves stay off for the session).
+function ns.CurveAlpha(region, getter, curve, fallback)
+	if curve and not ns.curvesBroken then
+		local ok = pcall(function()
+			local v = getter(curve)
+			if v == nil or (not issecret(v) and (type(v) ~= "number" or v > 1.0001)) then error("no curve support") end
+			region:SetAlpha(v)
+		end)
+		if ok then return true end
+		ns.curvesBroken = true
+	end
+	region:SetAlpha(fallback)
+	return false
+end
 
 ns.defaults = {
 	coachShown = true,
@@ -12,6 +52,10 @@ ns.defaults = {
 	levelsAbove = 3,      -- ... and up to this many above (shown with the level they need)
 	budget = nil,         -- copper per item; nil = 5% of your gold (50s to 50g)
 	talentReminders = true,
+	assist = true,        -- live recommendations in the coach
+	plateQueues = true,   -- spell queues on enemy nameplates
+	buttonGlow = true,    -- light up the action button of the recommended spell
+	shardTarget = 5,      -- suggest Drain Soul finishes while you carry fewer Soul Shards than this
 }
 
 local frame = CreateFrame("Frame")
@@ -81,6 +125,15 @@ function ns.KnownSpell(name)
 		return nil
 	end
 	return info.spellID, info.iconID
+end
+
+-- Spell set for the demon that is out (Voidwalker, Succubus/Sayaad, Felhunter, Imp, or none).
+function ns.CurrentSet()
+	local family = UnitExists("pet") and UnitCreatureFamily("pet") or nil
+	if ns.IsSecret(family) then family = nil end
+	local key = family and (ns.PET_ALIASES[family] or family) or "none"
+	if not ns.PET_SETS[key] then key = "none" end
+	return ns.PET_SETS[key], key, family
 end
 
 ns.MARKERS = {
