@@ -33,6 +33,7 @@ ns.defaults = {
 	showMinimap = true,
 	minimapAngle = 215,
 	durations = { consumable = 1, trade = 1, gear = 2, rare = 3, other = 2 }, -- 1 = 12h, 2 = 24h, 3 = 48h
+	sellBoE = false,            -- also sell unbound bind-on-equip items when the vendor pays more
 	priorKills = 25,            -- weight of the public database, in kills, against personal kills
 	farmBelow = 6,              -- farming spots: creatures down to this many levels below yours
 	farmAbove = 1,              -- ... and up to this many levels above yours
@@ -107,6 +108,8 @@ function ns:InitDB()
 	db.mobs = db.mobs or {}       -- [npcID] = { k = kills, m = copper, n = name, i = { [itemID] = {drops, quantity} } }
 	db.heat = db.heat or {}       -- [mapID] = { [cell] = { [npcID] = kills } }
 	db.names = db.names or {}     -- [itemID] = colored item name, cached at loot time
+	db.depositRates = db.depositRates or {} -- [duration] = deposit / vendor price, measured at the auction house
+	db.mules = db.mules or {}     -- [realmKey] = mule character name for the mail panel
 	ns.db = db
 	ns.settings = db.settings
 	ns.realmData = nil
@@ -324,11 +327,44 @@ function ns:GetAHPrice(itemID, statName)
 	return stats[ns.STAT[statName or self.settings.compare] or ns.STAT.p50]
 end
 
--- What a sale at the reference price would actually pay after the auction house cut.
-function ns:GetAHNet(itemID)
+-- Deposit per unit for the item's default duration. Rates are measured with the game's deposit
+-- functions whenever the auction house is open; until then 15% / 30% / 60% of the vendor price for
+-- 12 h / 24 h / 48 h is assumed.
+ns.DEFAULT_DEPOSIT = { 0.15, 0.30, 0.60 }
+
+function ns:ItemDuration(itemID)
+	local classID = select(6, C_Item.GetItemInfoInstant(itemID))
+	local entry = ns.FarmDB and ns.FarmDB.items[itemID]
+	local quality = (entry and entry[2]) or (C_Item.GetItemQualityByID and C_Item.GetItemQualityByID(itemID)) or 1
+	return self.settings.durations[self:GetCategory(classID, quality)] or 2
+end
+
+function ns:DepositPerUnit(itemID, sellPrice, duration)
+	sellPrice = sellPrice or self:GetSellPrice(itemID)
+	duration = duration or self:ItemDuration(itemID)
+	local rate = self.db.depositRates[duration] or ns.DEFAULT_DEPOSIT[duration] or 0.30
+	return math.floor(sellPrice * rate + 0.5)
+end
+
+-- What a sale at a given unit price really pays: price minus the auction house cut minus the deposit.
+function ns:NetFromPrice(itemID, price, sellPrice, deposit)
+	return math.floor(price * (1 - ns.AH_CUT)) - (deposit or self:DepositPerUnit(itemID, sellPrice))
+end
+
+-- Net of the reference statistic (default: median). Every auction value BagBroker displays or
+-- compares with the vendor price is net of the cut and the deposit.
+function ns:GetAHNet(itemID, sellPrice)
 	local price = self:GetAHPrice(itemID)
 	if not price then return nil end
-	return math.floor(price * (1 - ns.AH_CUT))
+	return self:NetFromPrice(itemID, price, sellPrice)
+end
+
+-- Records a measured deposit rate (deposit for one unit / vendor price) for a duration.
+function ns:RecordDepositRate(duration, deposit, sellPrice)
+	if not duration or not deposit or not sellPrice or sellPrice < 100 or deposit <= 1 then return end
+	local rate = deposit / sellPrice
+	local old = self.db.depositRates[duration]
+	self.db.depositRates[duration] = old and (old * 0.7 + rate * 0.3) or rate
 end
 
 function ns:GetSellPrice(itemID)
@@ -467,9 +503,14 @@ function ns:ShouldVendor(info)
 	if self.db.junk[id] then return true, "on junk list" end
 	if info.isQuest then return false, "quest item" end
 	if info.isRefundable then return false, "refundable purchase" end
-	if info.isBoE then return false, "bind on equip" end
+	local ahNet = (not info.isBound) and self:GetAHNet(id, info.sellPrice) or nil
+	if info.isBoE then
+		if self.settings.sellBoE and ahNet and info.sellPrice >= ahNet then
+			return true, "bind on equip, vendor price >= auction net"
+		end
+		return false, "bind on equip"
+	end
 
-	local ahNet = (not info.isBound) and self:GetAHNet(id) or nil
 	if info.quality == 0 then
 		if ahNet and ahNet > info.sellPrice then return false, "auction pays more" end
 		return true, "poor quality"
@@ -483,7 +524,7 @@ function ns:ShouldVendor(info)
 		return false, "soulbound"
 	end
 	if not ahNet then return false, "no auction data" end
-	if info.sellPrice >= ahNet then return true, "vendor price >= auction net" end
+	if info.sellPrice >= ahNet then return true, "vendor price >= auction net (cut and deposit deducted)" end
 	return false, "auction pays more"
 end
 

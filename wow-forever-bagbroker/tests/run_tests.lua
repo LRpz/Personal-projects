@@ -79,7 +79,7 @@ end
 -- Loading
 ---------------------------------------------------------------------------
 test("addon loads every TOC file and initialises account-wide saved variables", function()
-	eq(#files, 12, "file count")
+	eq(#files, 14, "file count")
 	truthy(BagBrokerDB and BagBrokerDB.settings, "saved variables")
 	eq(ns.settings.autoSell, true, "default autoSell")
 	eq(ns:GetRealmKey(), "TestRealm-Alliance", "realm key")
@@ -246,7 +246,8 @@ end
 
 test("item tooltip: aligned block with sell price, lowest auction and quartiles", function()
 	local lines = ItemTooltip(4001, { lines = {} })
-	eq(table.concat(lines, " | "), "Sell Price || 1s 00c | Auction || 1s 50c |   25% || 1s 80c |   50% || 2s 00c |   75% || 2s 60c")
+	-- Net = price - 5% cut - deposit (15% of the 1s vendor price for the 12h trade-goods default = 15c).
+	eq(table.concat(lines, " | "), "Sell Price || 1s 00c | Auction (net) || 1s 27c |   25% || 1s 56c |   50% || 1s 75c |   75% || 2s 32c")
 end)
 
 test("item tooltip: the game's own Sell Price line is restyled into the aligned block", function()
@@ -261,14 +262,14 @@ test("item tooltip: the game's own Sell Price line is restyled into the aligned 
 	eq(left.text, "Sell Price", "label without the colon")
 	eq(Plain(right.text), "1s 00c", "money moved to the right column")
 	eq(right.shown, true, "right column shown")
-	eq(lines[1], "Auction || 1s 50c", "no duplicate sell row")
+	eq(lines[1], "Auction (net) || 1s 27c", "no duplicate sell row")
 end)
 
 test("item tooltip multiplies by the hovered bag stack like the default line", function()
 	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(4001, 10) } })
 	local owner = { GetBagID = function() return 0 end, GetID = function() return 1 end }
 	local lines = ItemTooltip(4001, { lines = {} }, owner)
-	eq(table.concat(lines, " | "), "Sell Price || 10s 00c | Auction || 15s 00c |   25% || 18s 00c |   50% || 20s 00c |   75% || 26s 00c")
+	eq(table.concat(lines, " | "), "Sell Price || 10s 00c | Auction (net) || 12s 70c |   25% || 15s 60c |   50% || 17s 50c |   75% || 23s 20c")
 end)
 
 test("item tooltip hides auction rows for soulbound bag items", function()
@@ -289,6 +290,83 @@ test("aligned money keeps every lower denomination so columns line up", function
 	eq(Plain(cols.g.text) .. "|" .. Plain(cols.s.text) .. "|" .. Plain(cols.c.text), "12g|50s|00c", "three columns")
 	cols:SetAmount(95, "|cffff8040")
 	eq(Plain(cols.g.text) .. "|" .. Plain(cols.s.text) .. "|" .. Plain(cols.c.text), "||95c", "empty higher columns")
+end)
+
+
+test("auction net deducts the cut and a deposit that is calibrated at the auction house", function()
+	eq(ns:DepositPerUnit(4001, 100), 15, "15% of 1s for a 12h trade good")
+	eq(ns:NetFromPrice(4001, 200, 100), 175, "190 after the cut, minus 15 deposit")
+	eq(ns:DepositPerUnit(2000, 500), 150, "BoE gear defaults to 24h: 30%")
+	local saved = ns.db.depositRates[1]
+	ns.db.depositRates[1] = nil
+	ns:RecordDepositRate(1, 20, 100)
+	eq(ns:DepositPerUnit(4001, 100), 20, "the first measurement replaces the default estimate")
+	ns:RecordDepositRate(1, 10, 100)
+	eq(ns:DepositPerUnit(4001, 100), 17, "later measurements blend in (70/30)")
+	ns.db.depositRates[1] = saved
+end)
+
+test("vendor option: bind-on-equip items are sold only when enabled and the vendor pays more", function()
+	ns:SetStats(2000, 400, 450, 500, 600, 3)  -- net 475 - 150 deposit = 325 < 500 vendor
+	eq(Decide(2000), false, "kept by default")
+	ns.settings.sellBoE = true
+	eq(Decide(2000), true, "sold with the option on")
+	ns:SetStats(2000, 4000, 4500, 5000, 6000, 3)
+	eq(Decide(2000), false, "kept when the auction pays more")
+	ns.settings.sellBoE = false
+	ns:GetRealmData().items[2000] = nil
+end)
+
+test("merchant panel shows the options and sells on demand", function()
+	ns.settings.autoSell = false
+	M.SetBags({ [0] = { size = 2, [1] = ItemSlot(1000, 2), [2] = ItemSlot(4000, 5) } })
+	M.ResetCalls()
+	M.Fire("MERCHANT_SHOW")
+	M.Advance(0.5)
+	local panel = ns.Vendor.panel
+	truthy(panel and panel:IsShown(), "panel shown")
+	eq(M.CountCalls("UseContainerItem"), 0, "nothing sold automatically when auto-sell is off")
+	truthy(panel.summary.text:find("2 stack(s) sell better", 1, true), "summary: " .. tostring(panel.summary.text))
+	eq(panel.sell.text, "Sell now (2)")
+	panel.checks.sellBoE:SetChecked(true)
+	panel.checks.sellBoE.scripts.OnClick(panel.checks.sellBoE)
+	eq(ns.settings.sellBoE, true, "checkbox toggles the option")
+	ns.settings.sellBoE = false
+	panel.sell.scripts.OnClick(panel.sell)
+	M.Advance(2)
+	eq(M.CountCalls("UseContainerItem"), 2, "sold on demand")
+	M.Fire("MERCHANT_CLOSED")
+	ns.settings.autoSell = true
+end)
+
+test("mail panel packs auction items for the mule, 12 stacks per mail", function()
+	local bag = { size = 16 }
+	for i = 1, 14 do bag[i] = ItemSlot(4001, 20) end   -- auction net 175 > vendor 100
+	bag[15] = ItemSlot(2000)                             -- bind-on-equip: auction goods
+	bag[16] = ItemSlot(4000, 5)                          -- vendor pays more: stays
+	M.SetBags({ [0] = bag })
+	M.mailItems = {}
+	SendMailNameEditBox.text, SendMailSubjectEditBox.text = "", ""
+	SlashCmdList.BAGBROKER("mule Muley")
+	eq(ns.Mail:Mule(), "Muley", "mule saved per realm")
+	M.Fire("MAIL_SHOW")
+	M.Advance(0.2)
+	local mail = ns.Mail
+	truthy(mail.frame and mail.frame:IsShown(), "panel shown")
+	eq(#mail.rows, 2, "two auction items; the vendor item is left out")
+	truthy(mail.summary.text:find("15 stack(s)", 1, true) and mail.summary.text:find("2 mail(s)", 1, true), mail.summary.text)
+	eq(mail.attachButton.text, "Attach 12 of 15 stacks")
+	mail.attachButton.scripts.OnClick(mail.attachButton)
+	local attached = 0
+	for i = 1, 12 do if M.mailItems[i] then attached = attached + 1 end end
+	eq(attached, 12, "mail filled")
+	eq(SendMailNameEditBox.text, "Muley", "recipient filled")
+	eq(SendMailSubjectEditBox.text, "AH items", "subject filled")
+	M.mailItems = {}
+	M.Fire("MAIL_SEND_SUCCESS")
+	M.Advance(1)
+	eq(mail.attachButton.text, "Attach 3 of 3 stacks", "next mail")
+	mail.frame:Hide()
 end)
 
 ---------------------------------------------------------------------------
@@ -469,6 +547,7 @@ ns.FarmDB = {
 		[504] = { "New Forever Mob", 21, 21, 0, 0, 0, {}, {}, { [1429] = { 1700, 4 } }, 0, false },
 	},
 }
+ns.EverlootDB = { asOf = "2026-11-20T12:00:00", npcs = {} }
 ns.Farm:Invalidate()
 
 local function near(a, b, msg) if math.abs(a - b) > 0.01 then error(("%s: expected %s, got %s"):format(msg or "value", b, a), 2) end end
@@ -484,7 +563,7 @@ test("personal kills are weighted against the database by kill count", function(
 	ns.Farm:Invalidate()
 	local v, n, source = ns.Farm:MobValue(500)
 	near(v, 75, "5 kills: (25x50 + 5x200) / 30")
-	eq(n, 5); eq(source, "both")
+	eq(n, 5); eq(source, "vanilla + you 5")
 	local drops = ns.Farm:DropTable(500)
 	near(drops[1].chance, (25 * 0.5 + 5) / 30, "drop chance weighted the same way")
 	ns.db.mobs[500] = { k = 100, m = 0, i = { [7001] = { 100, 200 } } }
@@ -494,12 +573,35 @@ test("personal kills are weighted against the database by kill count", function(
 	ns.Farm:Invalidate()
 	local v2, _, source2 = ns.Farm:MobValue(504)
 	near(v2, 100, "Forever-only: personal data alone")
-	eq(source2, "mine")
+	eq(source2, "you 4")
 	ns.settings.priorKills = 0
 	ns.Farm:Invalidate()
 	near(ns.Farm:MobValue(500), 200, "prior 0: personal only")
 	ns.settings.priorKills = 25
 	ns.db.mobs[500], ns.db.mobs[504] = nil, nil
+	ns.Farm:Invalidate()
+end)
+
+
+test("Everloot windows join the weighting, corrected for corpses without loot", function()
+	ns.EverlootDB.npcs[500] = { 100, 6, 7001, 80 }   -- 100 loot windows, 80 with a fang
+	ns.Farm:Invalidate()
+	local drops, _, _, _, label = ns.Farm:DropTable(500)
+	near(drops[1].chance, (25 * 0.5 + 80) / 125, "chance weighted by windows")
+	eq(label, "vanilla + Everloot 100")
+	near(ns.Farm:MobValue(500), (25 * 50 + 80 * 100) / 125, "value weighted the same way")
+	ns.FarmDB.mobs[500][12] = 0.5                     -- only half the corpses can be looted
+	ns.Farm:Invalidate()
+	drops = ns.Farm:DropTable(500)
+	near(drops[1].chance, (25 * 0.5 + 80 * 0.5) / 125, "window share converted to a per-kill chance")
+	ns.FarmDB.mobs[500][12] = nil
+	ns.EverlootDB.npcs[504] = { 10, 3, 7001, 5 }      -- Forever-only creature
+	ns.Farm:Invalidate()
+	local v, _, label2 = ns.Farm:MobValue(504)
+	near(v, 50, "Everloot alone: 5 of 10 windows x 1s")
+	eq(label2, "Everloot 10")
+	eq(ns.Farm:EverlootAgeDays() ~= nil, true, "data age known")
+	ns.EverlootDB.npcs = {}
 	ns.Farm:Invalidate()
 end)
 
@@ -601,7 +703,7 @@ test("mob tooltip: loot per kill and drop chances with right-aligned values", fu
 	tt.lines = {}
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-1234-00000009" })
 	local lines = PlainLines(tt.lines)
-	contains(lines, "Loot per kill (3 kills) || 13c")
+	contains(lines, "Loot per kill (you 3) || 13c")
 	contains(lines, "Linen Cloth || ")
 	contains(lines, " 33% 13c -", "chance, vendor price, no auction data yet")
 	contains(lines, "  Money || 4c")
@@ -619,21 +721,21 @@ test("mob tooltip: database creature shows weighted drops, world drops and skinn
 	tt.lines = {}
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-500-00000001" })
 	local lines = PlainLines(tt.lines)
-	contains(lines, "Loot per kill (database) || 50c")
-	contains(lines, "  Drops ||  Chance Vendor AH", "column header")
+	contains(lines, "Loot per kill (vanilla) || 50c")
+	contains(lines, "  Drops ||  Chance Vendor AH net", "column header")
 	contains(lines, "Fang || ")
 	contains(lines, " 50% 1s 00c -", "one vendor and one auction price per item")
 	contains(lines, "  Skinning (you can skin it) || 50c")
 	tt.lines = {}
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-501-00000001" })
 	lines = PlainLines(tt.lines)
-	contains(lines, "Loot per kill (database) || 1s 24c")
+	contains(lines, "Loot per kill (vanilla) || 1s 24c")
 	contains(lines, "  Random world drops || 1.0%")
 	ns:SetStats(2589, 10, 12, 15, 20, 100)
 	ns.Farm:Invalidate()
 	tt.lines = {}
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-501-00000002" })
-	contains(PlainLines(tt.lines), " 40% 13c 15c", "auction median shown once known")
+	contains(PlainLines(tt.lines), " 40% 13c 12c", "auction net shown once known: 15c - 5% - 2c deposit")
 	contains(lines, "  Money || 1s 00c")
 	M.profs = nil
 	ns.Farm.profCache = nil

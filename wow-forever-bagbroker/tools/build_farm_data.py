@@ -161,6 +161,29 @@ def expand_loot(rows):
     return items, refs
 
 
+def lootable_probability(rows, gold):
+    """Probability that a corpse has anything to loot (Everloot counts only opened loot windows)."""
+    if gold > 0:
+        return 1.0
+    p_empty = 1.0
+    groups = collections.defaultdict(lambda: [0.0, False])
+    for r in rows:
+        chance = r["ChanceOrQuestChance"]
+        if chance < 0:
+            continue
+        if r["groupid"] == 0:
+            p_empty *= 1.0 - min(1.0, chance / 100.0)
+        else:
+            g = groups[r["groupid"]]
+            if chance == 0:
+                g[1] = True  # equal-chance entries share the remainder: the group always yields
+            else:
+                g[0] += chance
+    for total, has_equal in groups.values():
+        p_empty *= 0.0 if has_equal else 1.0 - min(1.0, total / 100.0)
+    return 1.0 - p_empty
+
+
 def flatten_ref(ref_id, ref_rows, memo, depth=0):
     """Expected items per roll of a reference template, nested references flattened."""
     if ref_id in memo:
@@ -339,6 +362,7 @@ def main():
         has_db = t is not None
         gold = ((t["MinLootGold"] or 0) + (t["MaxLootGold"] or 0)) / 2.0 if t else 0
         direct, misc, refs_out = [], 0.0, []
+        lootable = lootable_probability(creature_loot.get(t["LootId"], []) if t and t["LootId"] else [], gold) if t else 1.0
         if t and t["LootId"]:
             items, refs = expand_loot(creature_loot.get(t["LootId"], []))
             for item, (chance, qty) in sorted(items.items(), key=lambda kv: -kv[1][1]):
@@ -370,9 +394,9 @@ def main():
         stats["forever_only"] += 0 if has_db else 1
         loot_flat = ",".join("%d,%s,%s" % (i, num(c), num(n, 2)) for i, c, n in direct)
         refs_flat = ",".join("%d,%s" % (r, num(rolls)) for r, rolls in refs_out)
-        mobs_out.append("[%d]={%s,%d,%d,%d,%s,%d,{%s},{%s},%s,%s,%s}" % (
+        mobs_out.append("[%d]={%s,%d,%d,%d,%s,%d,{%s},{%s},%s,%s,%s,%s}" % (
             npc_id, lua_str(name), min_level, max_level, rank, num(gold, 1), skin, loot_flat, refs_flat,
-            cells_lua(cells), num(misc, 1), "true" if has_db else "false"))
+            cells_lua(cells), num(misc, 1), "true" if has_db else "false", num(max(0.05, lootable), 2)))
 
     refs_lines = []
     for ref in sorted(used_refs):
@@ -430,7 +454,8 @@ def main():
         "-- Data derived from CMaNGOS Classic-DB (GPLv3, https://github.com/cmangos/classic-db) and",
         "-- QuestieDB Forever data (GPLv3, https://github.com/Questie/QuestieDB). See licenses/.",
         "-- mobs[npcID] = { name, minLevel, maxLevel, rank, avgCopper, skinLootID, {itemID, chance, avgCount, ...},",
-        "--                 {refID, rolls, ...}, {[uiMapID] = {cell, spawns, ...}}, smallDropVendorCopper, hasLootData }",
+        "--                 {refID, rolls, ...}, {[uiMapID] = {cell, spawns, ...}}, smallDropVendorCopper, hasLootData,",
+        "--                 probabilityCorpseHasLoot }",
         "local _, ns = ...",
         "ns.FarmDB = {",
         'built = "%s",' % today,

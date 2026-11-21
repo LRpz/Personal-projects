@@ -21,6 +21,8 @@ local HELP = {
 	"/bb panel - toggle the auction selling panel (at the auction house)",
 	"/bb scan - start a full auction scan (once per 15 min, at the auction house)",
 	"/bb sell on|off - automatic vendor selling (hold Shift at a merchant to skip once)",
+	"/bb sellboe on|off - also sell bind-on-equip items when the vendor pays more than the auction net",
+	"/bb mule <name> - mule character for the mail panel (saved per realm); /bb mail toggles the panel",
 	"/bb preview - list what the vendor would buy right now, and why other items are kept",
 	"/bb keep <item link> - never sell or destroy this item",
 	"/bb junk <item link> - always sell this item to vendors",
@@ -80,6 +82,19 @@ commands.sell = function(arg)
 	ns.settings.autoSell = OnOff(arg, ns.settings.autoSell)
 	ns:Print("Automatic vendor selling " .. (ns.settings.autoSell and "on" or "off") .. ".")
 end
+
+commands.sellboe = function(arg)
+	ns.settings.sellBoE = OnOff(arg, ns.settings.sellBoE)
+	ns:Print("Selling bind-on-equip items when the vendor pays more " .. (ns.settings.sellBoE and "on" or "off") .. ".")
+end
+
+commands.mule = function(_, raw)
+	local name = (raw or ""):match("^%s*(%S+)")
+	if name then ns.Mail:SetMule(name) end
+	ns:Print("Mule for " .. ns:GetRealmKey() .. ": " .. (ns.Mail:Mule() ~= "" and ns.Mail:Mule() or "not set"))
+end
+
+commands.mail = function() BagBroker_ToggleMailPanel() end
 
 commands.preview = function()
 	local sell, keep = ns.Vendor:Preview()
@@ -149,6 +164,13 @@ commands.status = function()
 	ns:Print(("Auction data %s: %d items, last full scan %s."):format(ns:GetRealmKey(), CountKeys(realm.items),
 		done > 0 and date("%Y-%m-%d %H:%M", done) or "never"))
 	ns:Print(("Loot data: %d mobs, %d maps."):format(CountKeys(ns.db.mobs), CountKeys(ns.db.heat)))
+	local age = ns.Farm and ns.Farm:EverlootAgeDays()
+	if age then
+		ns:Print(("Everloot data: %d creatures, as of %s (%d day(s) old). Run tools/update_everloot.py to refresh."):format(
+			CountKeys(ns.EverlootDB.npcs), ns.EverlootDB.asOf:sub(1, 10), age))
+	else
+		ns:Print("Everloot data: not installed.")
+	end
 	ns:Print(("Selling: auto %s, compare %s, soulbound gear %s, replacement %s."):format(
 		ns.settings.autoSell and "on" or "off", ns.settings.compare,
 		ns.settings.sellSoulboundGear and "on" or "off", ns.settings.replaceLoot and "on" or "off"))

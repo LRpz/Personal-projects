@@ -45,7 +45,13 @@ function Panel:ComputePrice(row)
 		})
 	end
 	row.source = (row.reason == "manual" and "manual") or (row.listings and "live") or "estimate"
-	row.vendorBetter = row.price ~= nil and ns.Pricing.NetAfterCut(row.price, ns.AH_CUT) <= (row.sellPrice or 0)
+end
+
+-- Net of the listing price (cut and deposit for the chosen duration), and whether a vendor pays more.
+function Panel:UpdateNet(row)
+	row.deposit = (row.deposits and row.deposits[row.duration]) or ns:DepositPerUnit(row.itemID, row.sellPrice, row.duration)
+	row.net = row.price and ns:NetFromPrice(row.itemID, row.price, row.sellPrice, row.deposit) or nil
+	row.vendorBetter = row.net ~= nil and row.net <= (row.sellPrice or 0)
 end
 
 function Panel:ApplyState(row)
@@ -55,6 +61,7 @@ function Panel:ApplyState(row)
 	else
 		row.duration = ns.settings.durations[row.category] or 2
 	end
+	self:UpdateNet(row)
 	if st and st.userChecked ~= nil then
 		row.checked = st.userChecked
 	else
@@ -89,6 +96,21 @@ function Panel:BuildRows()
 			count = info.count, sellPrice = info.sellPrice, bag = bag, slot = slot,
 			category = ns:GetCategory(info.classID, info.quality),
 		}
+		-- Exact deposits for one unit and each duration; they also calibrate the estimate used
+		-- outside the auction house.
+		row.deposits = {}
+		for duration = 1, 3 do
+			local deposit
+			if isCommodity then
+				deposit = C_AuctionHouse.CalculateCommodityDeposit(info.itemID, duration, 1)
+			else
+				deposit = C_AuctionHouse.CalculateItemDeposit(info.loc, duration, 1)
+			end
+			if deposit then
+				row.deposits[duration] = deposit
+				ns:RecordDepositRate(duration, deposit, info.sellPrice)
+			end
+		end
 		byKey[key] = row
 		rows[#rows + 1] = row
 	end)
@@ -384,7 +406,7 @@ function Panel:CreateRow(i)
 			ns.AddTooltipLine(GameTooltip, "Suggested: " .. ns.Pricing.DescribeReason(row.reason, row.details, ns.FormatMoney))
 		end
 		if row.vendorBetter then
-			GameTooltip:AddLine("A vendor pays at least as much as this auction would after the cut.", 1, 0.5, 0.25, true)
+			GameTooltip:AddLine("A vendor pays at least as much as this auction would after the cut and the deposit.", 1, 0.5, 0.25, true)
 		end
 		GameTooltip:Show()
 	end)
@@ -565,9 +587,9 @@ function Panel:RefreshEditor()
 	end
 	ed.durButton:SetText(DURATION_LABELS[row.duration] or "?")
 	local lines = { ns.Pricing.DescribeReason(row.reason, row.details, ns.FormatMoney) }
-	local net = row.price and ns.Pricing.NetAfterCut(row.price, ns.AH_CUT)
-	lines[#lines + 1] = ("Vendor %s each, auction net %s each"):format(
-		ns.FormatMoney(row.sellPrice or 0), net and ns.FormatMoney(net) or "?")
+	local net = row.net
+	lines[#lines + 1] = ("Vendor %s each, auction net %s each (5%% cut and %s deposit deducted)"):format(
+		ns.FormatMoney(row.sellPrice or 0), net and ns.FormatMoney(math.max(0, net)) or "?", ns.FormatMoney(row.deposit or 0))
 	ed.info:SetText(table.concat(lines, "\n"))
 end
 
@@ -605,8 +627,12 @@ function Panel:Refresh()
 		end
 	end
 	self.allCheck:SetChecked(priced > 0 and ticked == priced)
-	self.summary:SetText(("%d ticked: %s, %s after the %d%% cut"):format(
-		ticked, ns.FormatMoney(total), ns.FormatMoney(total * (1 - ns.AH_CUT)), ns.AH_CUT * 100))
+	local net = 0
+	for _, row in ipairs(self.rows) do
+		if row.checked and row.price and row.status ~= "posting" then net = net + math.max(0, row.net or 0) * row.count end
+	end
+	self.summary:SetText(("%d ticked: %s, %s net of cut and deposits"):format(
+		ticked, ns.FormatMoney(total), ns.FormatMoney(net)))
 	if self.pending then
 		self.postButton:SetText("Confirm post")
 		self.postButton:SetEnabled(true)

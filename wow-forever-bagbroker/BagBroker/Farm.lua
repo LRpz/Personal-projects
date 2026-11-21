@@ -2,11 +2,13 @@
 -- Combines the shipped public loot database (FarmData.lua) with your own kills, then ranks
 -- farming spots for your level and gathering spots for your professions.
 --
--- Weighting: the database counts as `priorKills` observations (default 25). With n personal kills
---   value = (priorKills * databaseValue + n * personalValue) / (priorKills + n)
--- so 5 kills move the estimate by 5/30 (17%), 100 kills by 100/125 (80%). The same rule applies
--- to each drop chance and to the money per kill. Creatures missing from the database (most new
--- Forever content) use personal data only.
+-- Weighting: three layers, each weighted by how many observations it holds:
+--   * the vanilla database (CMaNGOS), counted as `priorKills` kills (default 25);
+--   * Everloot's crowd-sourced Forever loot windows (EverlootData.lua), one observation each;
+--   * your own kills, one observation each.
+--   value = (K * vanilla + nEverloot * everloot + nYou * yours) / (K + nEverloot + nYou)
+-- so 5 kills of yours weigh 5/30 against the vanilla prior, and 279 Everloot windows outweigh it
+-- by 279 to 25. Money per kill uses the vanilla and personal layers (Everloot does not report it).
 local _, ns = ...
 
 local Farm = { gen = 0, mobCache = {}, refCache = {}, itemCache = {} }
@@ -60,16 +62,45 @@ function Farm:RefValue(refID)
 	return v
 end
 
--- Database copper per kill (money + drops + world drops), or nil when the database has no loot.
-function Farm:DbValue(npcID)
+-- Vanilla database parts: money per kill and item value per kill (drops, world drops, small drops).
+function Farm:VanillaParts(npcID)
 	local m = DB() and DB().mobs[npcID]
 	if not m or not m[11] then return nil end
-	local total = (m[5] or 0) + (m[10] or 0)
+	local items = m[10] or 0
 	local loot = m[7]
-	for i = 1, #loot, 3 do total = total + loot[i + 1] * loot[i + 2] * self:ItemValue(loot[i]) end
+	for i = 1, #loot, 3 do items = items + loot[i + 1] * loot[i + 2] * self:ItemValue(loot[i]) end
 	local refs = m[8]
-	for i = 1, #refs, 2 do total = total + refs[i + 1] * self:RefValue(refs[i]) end
-	return total
+	for i = 1, #refs, 2 do items = items + refs[i + 1] * self:RefValue(refs[i]) end
+	return m[5] or 0, items
+end
+
+-- Database copper per kill (money + drops + world drops), or nil when the database has no loot.
+function Farm:DbValue(npcID)
+	local money, items = self:VanillaParts(npcID)
+	if not money then return nil end
+	return money + items
+end
+
+-- Everloot observations for a creature: loot windows, reporters and drops per item.
+function Farm:EverlootEntry(npcID)
+	local e = ns.EverlootDB and ns.EverlootDB.npcs and ns.EverlootDB.npcs[npcID]
+	if e and (e[1] or 0) > 0 then return e end
+	return nil
+end
+
+-- Everloot counts opened loot windows only; empty corpses cannot be opened. Converting a window
+-- share to a per-kill chance multiplies it by the chance that a corpse has loot (vanilla estimate).
+local function LootableShare(m)
+	return (m and m[12]) or 1
+end
+
+local function VanillaCount(m, itemID)
+	if not m then return 1 end
+	local loot = m[7]
+	for i = 1, #loot, 3 do
+		if loot[i] == itemID then return loot[i + 2] end
+	end
+	return 1
 end
 
 -- Personal copper per kill.
@@ -80,25 +111,48 @@ function Farm:PersonalValue(mob)
 	return total / mob.k
 end
 
--- Combined value per kill. Returns value, personalKills, source ("database", "mine", "both").
+-- Weights of the three layers: vanilla (prior, in kills), Everloot (loot windows), you (kills).
+function Farm:Weights(npcID)
+	local m = DB() and DB().mobs[npcID]
+	local e = self:EverlootEntry(npcID)
+	local mob = ns.db.mobs[npcID]
+	local K = (m and m[11]) and (ns.settings.priorKills or 25) or 0
+	return K, e and e[1] or 0, mob and mob.k or 0, m, e, mob
+end
+
+function Farm.SourceLabel(K, nEverloot, nMine)
+	local parts = {}
+	if K > 0 then parts[#parts + 1] = "vanilla" end
+	if nEverloot > 0 then parts[#parts + 1] = ("Everloot %d"):format(nEverloot) end
+	if nMine > 0 then parts[#parts + 1] = ("you %d"):format(nMine) end
+	return table.concat(parts, " + ")
+end
+
+-- Combined value per kill. Returns value, personalKills, source label.
 function Farm:MobValue(npcID)
 	local cached = self.mobCache[npcID]
 	if cached then return cached[1], cached[2], cached[3] end
-	local K = ns.settings.priorKills or 25
-	local mob = ns.db.mobs[npcID]
-	local n = mob and mob.k or 0
-	local personal = self:PersonalValue(mob)
-	local db = self:DbValue(npcID)
-	local value, source
-	if db and personal then
-		value, source = (K * db + n * personal) / (K + n), "both"
-	elseif db then
-		value, source = db, "database"
-	elseif personal then
-		value, source = personal, "mine"
+	local K, nE, nP, m, e, mob = self:Weights(npcID)
+	local value
+	if K + nE + nP > 0 then
+		local moneyV, itemsV = self:VanillaParts(npcID)
+		local itemsTotal = K * (itemsV or 0)
+		if e then
+			local share = LootableShare(m)
+			for i = 3, #e, 2 do
+				itemsTotal = itemsTotal + e[i + 1] * share * VanillaCount(m, e[i]) * self:ItemValue(e[i])
+			end
+		end
+		for itemID, entry in pairs(mob and mob.i or {}) do
+			itemsTotal = itemsTotal + (entry[2] or 0) * self:ItemValue(itemID)
+		end
+		local money = 0
+		if K + nP > 0 then money = (K * (moneyV or 0) + (mob and mob.m or 0)) / (K + nP) end
+		value = money + itemsTotal / (K + nE + nP)
 	end
-	self.mobCache[npcID] = { value, n, source }
-	return value, n, source
+	local label = self.SourceLabel(K, nE, nP)
+	self.mobCache[npcID] = { value, nP, label }
+	return value, nP, label
 end
 
 ---------------------------------------------------------------------------
@@ -159,32 +213,34 @@ end
 ---------------------------------------------------------------------------
 -- Drop table shown on mob tooltips
 ---------------------------------------------------------------------------
--- Returns { {id, chance}, ... } sorted by chance, money per kill, world-drop chance, kills, source.
+-- Returns { {id, chance}, ... } sorted by chance, money per kill, world-drop chance, personal kills
+-- and the source label. Each chance = (K x vanilla + Everloot drops x lootable share + your drops)
+-- divided by (K + Everloot windows + your kills).
 function Farm:DropTable(npcID)
-	local K = ns.settings.priorKills or 25
-	local m = DB() and DB().mobs[npcID]
-	local mob = ns.db.mobs[npcID]
-	local n = mob and mob.k or 0
-	local hasDb = m and m[11]
-	if not hasDb and n == 0 then return nil end
-	local wDb = hasDb and K or 0
-	local denom = wDb + n
+	local K, nE, nP, m, e, mob = self:Weights(npcID)
+	local denom = K + nE + nP
+	if denom == 0 then return nil end
 	local chances = {}
-	if hasDb then
+	if K > 0 then
 		local loot = m[7]
-		for i = 1, #loot, 3 do chances[loot[i]] = wDb * loot[i + 1] end
+		for i = 1, #loot, 3 do chances[loot[i]] = K * loot[i + 1] end
+	end
+	if e then
+		local share = LootableShare(m)
+		for i = 3, #e, 2 do chances[e[i]] = (chances[e[i]] or 0) + e[i + 1] * share end
 	end
 	for itemID, entry in pairs(mob and mob.i or {}) do
 		chances[itemID] = (chances[itemID] or 0) + (entry[1] or 0)
 	end
 	local list = {}
 	for itemID, weighted in pairs(chances) do
-		list[#list + 1] = { id = itemID, chance = weighted / denom }
+		list[#list + 1] = { id = itemID, chance = math.min(1, weighted / denom) }
 	end
 	table.sort(list, function(a, b) return a.chance > b.chance end)
-	local money = ((hasDb and wDb * (m[5] or 0) or 0) + (mob and mob.m or 0)) / denom
+	local money = 0
+	if K + nP > 0 then money = ((K > 0 and K * (m[5] or 0) or 0) + (mob and mob.m or 0)) / (K + nP) end
 	local world = 0
-	if hasDb then
+	if K > 0 then
 		local refs = m[8]
 		for i = 1, #refs, 2 do
 			local ref = DB().refs[refs[i]]
@@ -192,10 +248,20 @@ function Farm:DropTable(npcID)
 			for j = 2, #(ref or {}), 2 do count = count + ref[j] end
 			world = world + refs[i + 1] * count
 		end
-		world = world * wDb / denom
+		world = world * K / denom
 	end
-	local source = hasDb and (n > 0 and "both" or "database") or "mine"
-	return list, money, math.min(1, world), n, source
+	return list, money, math.min(1, world), nP, self.SourceLabel(K, nE, nP)
+end
+
+-- Age of the bundled Everloot data in days, or nil when no Everloot file is present.
+function Farm:EverlootAgeDays()
+	local asOf = ns.EverlootDB and ns.EverlootDB.asOf
+	if type(asOf) ~= "string" then return nil end
+	local y, mo, d = asOf:match("^(%d+)-(%d+)-(%d+)")
+	if not y then return nil end
+	local ok, t = pcall(time, { year = tonumber(y), month = tonumber(mo), day = tonumber(d), hour = 12 })
+	if not ok or not t then return nil end
+	return math.max(0, math.floor((time() - t) / 86400))
 end
 
 ---------------------------------------------------------------------------
@@ -485,6 +551,9 @@ function Farm:Refresh()
 		if self.profs[prof] then parts[#parts + 1] = ("%s %d"):format(PROF_LABELS[prof], self.profs[prof]) end
 	end
 	self.frame.summary:SetText(table.concat(parts, "   "))
+	local age = self:EverlootAgeDays()
+	self.frame.note:SetText(("Click a row to show it on the heatmap. Loot: vanilla + Everloot (%s) + your kills."):format(
+		age and (age <= 1 and "fresh" or (age .. " days old")) or "not installed"))
 	for i, row in ipairs(rows) do
 		local rf = self:RowFrame(i)
 		rf:ClearAllPoints()

@@ -12,14 +12,16 @@ BagBroker is an addon for World of Warcraft: Forever (interface 16001, Mainline 
 
 ### 1 and 2. Vendor and auction prices on item tooltips
 
+Every auction value BagBroker displays or compares is net: the price minus the 5% auction cut minus the deposit for the item's default duration. Outside the auction house the deposit is estimated (15%, 30% and 60% of the vendor price for 12 h, 24 h and 48 h); each auction house visit measures the real rates with the game's deposit functions and the estimate converges to them.
+
 Prices form an aligned block: labels on the left and money right-aligned, with every lower denomination present (zero-padded and dimmed), so gold, silver and copper line up vertically and values can be compared at a glance. When the game adds its own `Sell Price:` line, BagBroker restyles that line into the block instead of adding a duplicate.
 
 ```
 Sell Price                 2s 60c
-Auction                   18s 00c      lowest buyout
-  25%                     20s 40c      quartiles of the unit price
-  50%                     23s 00c
-  75%                     27s 60c
+Auction (net)             17s 04c      lowest buyout, net of cut and deposit
+  25%                     19s 31c      quartiles of the unit price, net
+  50%                     21s 59c
+  75%                     25s 82c
 ```
 
 Prices refer to the hovered stack, consistent with the default line. Percentiles are weighted by units rather than auctions, so a stack of 200 counts as 200 offers. The statistics originate from two sources. First, a full scan (`C_AuctionHouse.ReplicateItems`) runs automatically when the auction house opens, subject to the server limit of one scan per 15 min. Second, every live price search performed by the selling panel refreshes the statistics of the searched item. Soulbound bag items show no auction rows.
@@ -30,15 +32,16 @@ When a merchant window opens, BagBroker sells every item whose vendor price is g
 
 | Item | Decision |
 |---|---|
-| Unbound bind-on-equip | Never sold |
+| Unbound bind-on-equip (default) | Never sold |
 | Poor quality (grey) | Sold, unless the auction net exceeds the vendor price |
-| Tradeable item with auction data | Sold when vendor price ≥ median × 0.95 (the 5% auction cut is deducted) |
+| Tradeable item with auction data | Sold when vendor price ≥ auction net (median − 5% cut − deposit) |
+| Unbound bind-on-equip, with "Include bind-on-equip" on (`/bb sellboe on`) | Sold when vendor price ≥ auction net |
 | Tradeable item without auction data | Kept |
 | Soulbound gear, uncommon or lower, item level not above the equipped item in that slot | Sold |
 | Other soulbound items, quest items, refundable purchases, items without vendor value | Kept |
 | Keep list (`/bb keep`) / junk list (`/bb junk`) | Always kept / always sold |
 
-Holding Shift while opening a merchant skips selling for that visit, and `/bb preview` lists the decision and its reason for every bag item. The comparison statistic can be changed with `/bb compare min|p25|p50|p75`.
+A small panel docks next to the merchant window with three options (automatic selling, include bind-on-equip items, include soulbound gear below your item level), the number and value of stacks that sell better to the vendor, and a **Sell now** button that works even when automatic selling is off. Holding Shift while opening a merchant skips automatic selling for that visit, and `/bb preview` lists the decision and its reason for every bag item. The comparison statistic can be changed with `/bb compare min|p25|p50|p75`.
 
 ### 4. Selling panel at the auction house
 
@@ -77,27 +80,51 @@ Because the Mainline client blocks item destruction without a hardware event (si
 
 All data reside in one account-wide SavedVariables table (`BagBrokerDB`). Auction statistics are keyed by realm and faction, so a gathering character and a selling character on the same realm read and write the same prices; `/bb share on` merges both factions of a realm. Mob loot data and heatmaps are shared by all characters on all realms. The client writes SavedVariables to disk only on logout or `/reload`, so the scanning character must log out (or reload) before another character can see its newest data.
 
-### 7. Loot tables on mob tooltips: public database weighted with your kills
+### 7. Loot tables on mob tooltips: vanilla database, Everloot and your kills
 
-No game API exposes creature loot tables, so BagBroker ships a database built offline from two public, GPLv3-licensed sources (see "Data sources"). Mob tooltips show the expected loot value per kill and the drop chances, right-aligned like the price block:
+No game API exposes creature loot tables, so BagBroker combines three sources, each weighted by the number of observations it holds:
+
+| Layer | Source | Weight |
+|---|---|---|
+| Vanilla database | CMaNGOS Classic-DB loot tables (per kill, but vanilla 1.12) | 25 kills by default (`/bb prior <kills>`) |
+| Everloot | Crowd-sourced WoW Forever loot windows (everloot.app) | One observation per loot window |
+| You | Your own kills, shared by all characters on the account | One observation per kill |
+
+    value = (25 × vanilla + windows × Everloot + kills × yours) / (25 + windows + kills)
+
+Five personal kills therefore weigh 5/30 against the vanilla prior, while 279 Everloot windows outweigh it by 279 to 25, so Forever's real drop rates take over wherever players have recorded them, and creatures with few observations fall back to the vanilla tables. Everloot counts opened loot windows, and corpses without loot cannot be opened; each Everloot share is therefore multiplied by the vanilla probability that a corpse has any loot (100% for creatures that drop money, about 79% for a typical boar) to obtain a per-kill chance. Money per kill uses the vanilla and personal layers, because Everloot does not report it. Creatures absent from both databases, including much new Forever content, use your kills alone. Mob tooltips show the sources, the expected value per kill and, for each drop, its chance and one vendor and one auction (net) unit price in aligned columns:
 
 ```
-Loot per kill (database + 12 kills)                   12s 40c
-  Drops                       Chance    Vendor          AH
+Loot per kill (vanilla + Everloot 279 + you 12)          12s 40c
+  Drops                       Chance    Vendor      AH net
   Cracked Basilisk Scale         58%    1s 05c           -
-  Basilisk Heart                 21%       45c      3s 10c
-  Scorpashi Gloves              0.9%   21s 40c  3g 85s 00c
+  Basilisk Heart                 21%       45c      2s 50c
+  Scorpashi Gloves              0.9%   21s 40c  3g 51s 25c
   Random world drops                                  2.4%
   Skinning (you can skin it)                        4s 10c
 ```
 
-Each drop shows its chance and one unit price per type: the vendor price and the auction reference price (the median by default, `/bb compare`); a dash marks a missing price. The columns are true fixed-width columns: every cell is measured with the tooltip font and padded with a transparent spacer (`spacer.tga`) to its column width.
+The columns are true fixed-width columns: every cell is measured with the tooltip font and padded with a transparent spacer (`spacer.tga`) to its column width. Kill counting is unchanged: each looted corpse counts once per GUID (area loot aware), empty corpses of targeted, tapped creatures also count, and pick pocketing and fishing are excluded. Values use current auction prices (net) when available and vendor prices otherwise; skinning is added when your Skinning skill reaches the creature's requirement (level 1 to 10: 1; 11 to 20: (level − 10) × 10; above 20: level × 5).
 
-Your own kills (shared by all characters on the account) refine the database by Bayesian weighting. The database counts as a fixed number of kills, 25 by default (`/bb prior <kills>`), so that
+#### Keeping the Everloot data current
 
-    value = (25 × database value + n × your value) / (25 + n)
+The game cannot download anything, so `EverlootData.lua` is refreshed outside it by `tools/update_everloot.py` (Python 3, no extra packages). It downloads Everloot's drop rollups and rewrites only that 10 KB file, and only when the data changed:
 
-Five personal kills therefore move an estimate by 5/30 (17%), whereas 100 kills move it by 100/125 (80%). The same rule applies to every drop chance and to the money per kill. Creatures that are absent from the database, which includes most new Forever content, use personal data alone. Kill counting is unchanged: each looted corpse counts once per GUID (area loot aware), empty corpses of targeted, tapped creatures also count, and pick pocketing and fishing are excluded. Values use current auction prices when available and vendor prices otherwise; skinning is added when your Skinning skill reaches the creature's requirement (level 1 to 10: 1; 11 to 20: (level − 10) × 10; above 20: level × 5).
+```
+python3 tools/update_everloot.py --out "C:/Program Files (x86)/World of Warcraft/_forever_/Interface/AddOns/BagBroker/EverlootData.lua"
+```
+
+To refresh automatically on Windows, schedule it once (for example daily at 18:00) in a terminal:
+
+```
+schtasks /create /tn "BagBroker Everloot" /sc daily /st 18:00 /tr "py \"C:\path\to\tools\update_everloot.py\" --out \"C:\Program Files (x86)\World of Warcraft\_forever_\Interface\AddOns\BagBroker\EverlootData.lua\""
+```
+
+The new data loads at the next login or `/reload`. `/bb status` and the farming window show the age of the installed data.
+
+#### Contributing your own data to Everloot
+
+Addons cannot send data over the network, so contributions go through Everloot's own pipeline: install the Everloot addon next to BagBroker, then either upload `WTF/Account/<account>/SavedVariables/Everloot.lua` at everloot.app/upload (with a preview before sending) or let the Everloot Desktop App upload after every logout. Both addons run independently; your uploads then return to BagBroker through the next Everloot refresh. BagBroker does not imitate Everloot's upload format, so that their validation, consent and deduplication remain intact.
 
 ### 8. Farming heatmap
 
@@ -127,6 +154,10 @@ We implemented the heatmap as a separate, movable window rather than an overlay 
 
 Clicking a row opens the heatmap on that zone with the matching source and, for kill spots, a gold frame around the area.
 
+### 10. Mail panel: send auction goods to a mule
+
+When the mailbox opens, a panel docks to its right. It lists every bag item worth selling at the auction house (bind-on-equip items, and items whose auction net beats the vendor price) with its auction net value, all ticked by default, and remembers your mule's name per realm (`/bb mule <name>` or the panel's field). **Attach** fills the Send Mail tab in one click: the recipient, the subject "AH items" and up to 12 stacks, the game's attachment limit. You then press the default Send button; the panel immediately offers the remaining stacks for the next mail.
+
 ## Commands
 
 | Command | Effect |
@@ -138,6 +169,9 @@ Clicking a row opens the heatmap on that zone with the matching source and, for 
 | `/bb panel` | Toggle the selling panel (at the auction house) |
 | `/bb scan` | Start a full auction scan (once per 15 min) |
 | `/bb sell on\|off` | Automatic vendor selling |
+| `/bb sellboe on\|off` | Also sell bind-on-equip items when the vendor pays more than the auction net |
+| `/bb mule <name>` | Mule for the mail panel (saved per realm) |
+| `/bb mail` | Toggle the mail panel |
 | `/bb preview` | List vendor decisions with reasons |
 | `/bb keep <item link>` | Never sell or destroy an item |
 | `/bb junk <item link>` | Always sell an item |
@@ -167,17 +201,17 @@ The build parses the SQL dump and the Lua data files as text and never executes 
 python3 tools/build_farm_data.py
 ```
 
-Both sources are GPLv3, and their licence texts are included in `BagBroker/licenses/`. The addon remains free for personal use; if you redistribute it, distribute it under GPLv3 with those licence files.
+`BagBroker/EverlootData.lua` holds Everloot's drop observations (CC BY-SA 4.0, attribution in `BagBroker/licenses/Everloot-DATA.md`; Creative Commons declares CC BY-SA 4.0 one-way compatible with GPLv3). CMaNGOS Classic-DB and QuestieDB are GPLv3, and their licence texts are included in `BagBroker/licenses/`. The addon remains free for personal use; if you redistribute it, distribute it under GPLv3 with those licence files.
 
 ## Testing
 
-The repository includes a mock of the game API and 38 behavioural tests, which load the addon files in TOC order under Lua 5.1, the language version embedded in the client:
+The repository includes a mock of the game API and 43 behavioural tests, which load the addon files in TOC order under Lua 5.1, the language version embedded in the client:
 
 ```
 lua5.1 tests/run_tests.lua
 ```
 
-The tests cover the pricing algorithm, the vendor rules, a merchant visit, the aligned tooltip block (including the restyled default line), the aligned money columns, a full scan, cross-character data access, posting from the panel (including server confirmation), loot learning, empty-corpse detection, the Bayesian weighting of database and personal data, skinning requirements, kill spot and gathering zone ranking (on a synthetic database for exact values and on the real database as a smoke test), the advisor window, the heatmap sources, full-bag replacement and the slash commands. The API signatures were taken from Blizzard's generated API documentation of the current Mainline client. The addon has not yet been run inside the Forever client, so the first session in game constitutes its validation; `/bb debug on` prints suppressed tooltip errors to the chat window.
+The tests cover the pricing algorithm, the vendor rules, a merchant visit, the aligned tooltip block (including the restyled default line), the aligned money columns, a full scan, cross-character data access, posting from the panel (including server confirmation), loot learning, empty-corpse detection, the weighting of the vanilla, Everloot and personal layers (including the empty-corpse correction), the deposit-aware auction net, the vendor panel and its bind-on-equip option, the mail panel (12 stacks per mail), skinning requirements, kill spot and gathering zone ranking (on a synthetic database for exact values and on the real database as a smoke test), the advisor window, the heatmap sources, full-bag replacement and the slash commands. The API signatures were taken from Blizzard's generated API documentation of the current Mainline client. The addon has not yet been run inside the Forever client, so the first session in game constitutes its validation; `/bb debug on` prints suppressed tooltip errors to the chat window.
 
 ## Known limitations
 
@@ -185,4 +219,5 @@ The tests cover the pricing algorithm, the vendor rules, a merchant visit, the a
 - The full scan is limited by the server to one run per 15 min.
 - Kills of creatures that were not targeted and left an empty corpse are not counted, so values per kill are slightly optimistic for area farming.
 - Statistics for gear are keyed by item ID; random suffix variants share one entry on tooltips, whereas the selling panel prices each variant separately.
-- The loot database reflects vanilla 1.12 loot tables. Where Forever changed a creature's loot, the estimate converges to Forever's values as your own kills accumulate, and new Forever creatures rely on your kills alone until a public Forever loot dataset becomes available.
+- The vanilla layer reflects 1.12 loot tables; Everloot and your kills move each estimate toward Forever's real rates as observations accumulate. Everloot currently covers about 170 creatures and grows as players upload.
+- Deposits outside the auction house are estimates until the first auction house visit calibrates them.

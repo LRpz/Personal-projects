@@ -16,7 +16,7 @@ local function NewWidget(kind, name, parent)
 	return w
 end
 -- Plain data fields that real widgets do not have unless a template or the addon sets them.
-local PROPERTIES = { isShopping = true, TitleText = true, CloseButton = true, lines = true, owner = true }
+local PROPERTIES = { isShopping = true, TitleText = true, CloseButton = true, lines = true, owner = true, Text = true }
 Widget.__index = function(self, key)
 	local method = rawget(Widget, key)
 	if method then return method end
@@ -98,7 +98,7 @@ end
 ---------------------------------------------------------------------------
 function GetTime() return M.now end
 local clock = 1700000000
-function time() return clock end
+function time(t) if t then return os.time(t) end return clock end
 function M.AdvanceClock(seconds) clock = clock + seconds end
 
 C_Timer = {}
@@ -210,7 +210,11 @@ function C_Item.GetItemInfo(x)
 	return it.name, M.Link(id), it.quality, it.ilvl or 1, 1, "", "", it.maxStack or 1, it.equipLoc or "", 1,
 		it.sellPrice or 0, it.classID or 15, 0, it.bindType or 0
 end
-function C_Item.GetItemInfoInstant(x) return IDFrom(x) end
+function C_Item.GetItemInfoInstant(x)
+	local id = IDFrom(x)
+	local it = M.items[id] or {}
+	return id, "", "", it.equipLoc or "", 1, it.classID or 15, 0
+end
 function C_Item.GetDetailedItemLevelInfo(x)
 	if type(x) == "string" and x:match("^equipped:") then return tonumber(x:match("equipped:(%d+)")) end
 	local it = M.items[IDFrom(x)]
@@ -364,8 +368,15 @@ function C_AuctionHouse.GetAvailablePostCount(loc)
 	return n
 end
 function C_AuctionHouse.SupportsCopperValues() return not M.silverOnly end
-function C_AuctionHouse.CalculateCommodityDeposit() return 100 end
-function C_AuctionHouse.CalculateItemDeposit() return 100 end
+-- Deposit: 15% of the vendor price per 12 hours (12h, 24h, 48h = 1x, 2x, 4x).
+local function Deposit(itemID, duration, quantity)
+	local it = M.items[itemID] or {}
+	return math.floor((it.sellPrice or 0) * 0.15 * 2 ^ (duration - 1) * (quantity or 1))
+end
+function C_AuctionHouse.CalculateCommodityDeposit(itemID, duration, quantity) return Deposit(itemID, duration, quantity) end
+function C_AuctionHouse.CalculateItemDeposit(loc, duration, quantity)
+	return Deposit(M.bags[loc.bag][loc.slot].itemID, duration, quantity)
+end
 function C_AuctionHouse.PostCommodity(loc, duration, quantity, unitPrice)
 	table.insert(M.calls, { "PostCommodity", loc.bag, loc.slot, duration, quantity, unitPrice })
 	return M.needsConfirmation or false
@@ -383,6 +394,21 @@ end
 function StaticPopup_Hide(which) table.insert(M.calls, { "StaticPopup_Hide", which }) end
 
 AuctionHouseFrame = NewWidget("Frame", "AuctionHouseFrame")
+MerchantFrame = NewWidget("Frame", "MerchantFrame")
+MailFrame = NewWidget("Frame", "MailFrame")
+SendMailFrame = NewWidget("Frame", "SendMailFrame")
+SendMailNameEditBox = NewWidget("EditBox", "SendMailNameEditBox")
+SendMailSubjectEditBox = NewWidget("EditBox", "SendMailSubjectEditBox")
+ATTACHMENTS_MAX_SEND = 12
+M.mailItems = {}
+function GetSendMailItem(i) return M.mailItems[i] end
+function ClickSendMailItemButton(index)
+	if not M.cursor then return end
+	local s = M.bags[M.cursor.bag][M.cursor.slot]
+	M.mailItems[index] = s and s.itemID
+	M.bags[M.cursor.bag][M.cursor.slot] = nil
+	M.cursor = nil
+end
 
 -- Tooltip data processor: records post-calls so tests can invoke them.
 M.tooltipPostCalls = {}

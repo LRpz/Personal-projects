@@ -1,7 +1,8 @@
--- BagBroker: automatic vendor selling.
--- Every item except unbound bind-on-equip items is sold when its vendor price is at least what
--- an auction would pay after the cut (see ns:ShouldVendor for the full rule set).
--- Hold Shift while opening a merchant to skip selling for that visit.
+-- BagBroker: vendor selling.
+-- Items are sold when the vendor price is at least the auction net (price minus the 5% cut and the
+-- deposit); unbound bind-on-equip items only when "Include bind-on-equip" is on (see
+-- ns:ShouldVendor for the full rule set). A small panel next to the merchant window holds the
+-- options and a "Sell now" button. Hold Shift while opening a merchant to skip automatic selling.
 local _, ns = ...
 
 local Vendor = {}
@@ -22,7 +23,7 @@ function Vendor:BuildList()
 end
 
 function Vendor:Start()
-	if self.ticker then return end
+	if self.ticker or not ns.merchantOpen then return end
 	local list = self:BuildList()
 	if #list == 0 then return end
 	self.list, self.index, self.total, self.sold = list, 0, 0, {}
@@ -64,6 +65,7 @@ function Vendor:Finish()
 		ns:Print(("Sold %d item(s) for %s%s"):format(#sold, ns.FormatMoney(self.total), detail))
 	end
 	self.list, self.sold = nil, nil
+	self:RefreshPanel()
 end
 
 -- Preview used by "/bb preview": what would be sold right now, with reasons for kept items.
@@ -80,13 +82,94 @@ function Vendor:Preview()
 	return sell, keep
 end
 
+---------------------------------------------------------------------------
+-- Panel next to the merchant window
+---------------------------------------------------------------------------
+local OPTIONS = {
+	{ key = "autoSell", label = "Sell automatically when a merchant opens" },
+	{ key = "sellBoE", label = "Include bind-on-equip items" },
+	{ key = "sellSoulboundGear", label = "Include soulbound gear below your item level" },
+}
+
+function Vendor:CreatePanel()
+	if self.panel then return self.panel end
+	if not MerchantFrame then return nil end
+	local f = ns:CreateWindow("BagBrokerVendorPanel", MerchantFrame, "BagBroker: vendor")
+	f:SetSize(280, 168)
+	f:SetPoint("TOPLEFT", MerchantFrame, "TOPRIGHT", 4, 0)
+	f:EnableMouse(true)
+	self.panel = f
+
+	f.checks = {}
+	for i, option in ipairs(OPTIONS) do
+		local cb = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+		cb:SetSize(22, 22)
+		cb:SetPoint("TOPLEFT", 10, -26 - (i - 1) * 22)
+		local text = cb.Text or cb:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		if not cb.Text then text:SetPoint("LEFT", cb, "RIGHT", 2, 0) end
+		text:SetFontObject("GameFontHighlightSmall")
+		text:SetText(option.label)
+		cb:SetScript("OnClick", function(btn)
+			ns.settings[option.key] = btn:GetChecked() and true or false
+			self:RefreshPanel()
+		end)
+		f.checks[option.key] = cb
+	end
+
+	f.summary = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.summary:SetPoint("TOPLEFT", 14, -98)
+	f.summary:SetPoint("TOPRIGHT", -14, -98)
+	f.summary:SetJustifyH("LEFT")
+	f.note = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	f.note:SetPoint("TOPLEFT", 14, -114)
+	f.note:SetPoint("TOPRIGHT", -14, -114)
+	f.note:SetJustifyH("LEFT")
+	f.note:SetText("Auction value = price - 5% cut - deposit.")
+
+	local sell = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	sell:SetSize(130, 22)
+	sell:SetPoint("BOTTOMRIGHT", -10, 10)
+	sell:SetScript("OnClick", function() self:Start() end)
+	f.sell = sell
+	local preview = CreateFrame("Button", nil, f, "UIPanelButtonTemplate")
+	preview:SetSize(90, 22)
+	preview:SetPoint("RIGHT", sell, "LEFT", -4, 0)
+	preview:SetText("List in chat")
+	preview:SetScript("OnClick", function() SlashCmdList.BAGBROKER("preview") end)
+	f:SetScript("OnShow", function() self:RefreshPanel() end)
+	return f
+end
+
+function Vendor:RefreshPanel()
+	local f = self.panel
+	if not f or not f:IsShown() then return end
+	for key, cb in pairs(f.checks) do cb:SetChecked(ns.settings[key] and true or false) end
+	local list = self:BuildList()
+	local total = 0
+	for _, info in ipairs(list) do total = total + (info.sellPrice or 0) * (info.count or 1) end
+	f.summary:SetText(("%d stack(s) sell better to the vendor: %s"):format(#list, ns.FormatMoney(total)))
+	f.sell:SetText(("Sell now (%d)"):format(#list))
+	f.sell:SetEnabled(#list > 0 and not self.ticker)
+end
+
 ns:RegisterEvent("MERCHANT_SHOW", function()
-	if not ns.settings.autoSell or IsShiftKeyDown() then return end
+	local skip = IsShiftKeyDown()
 	C_Timer.After(0.3, function()
-		if ns.merchantOpen then Vendor:Start() end
+		if not ns.merchantOpen then return end
+		local panel = Vendor:CreatePanel()
+		if panel then
+			if panel:IsShown() then Vendor:RefreshPanel() else panel:Show() end
+		end
+		if ns.settings.autoSell and not skip then Vendor:Start() end
 	end)
 end)
 
 ns:RegisterEvent("MERCHANT_CLOSED", function()
 	if Vendor.ticker then Vendor:Finish() end
+end)
+
+ns:RegisterEvent("BAG_UPDATE_DELAYED", function()
+	if ns.merchantOpen and Vendor.panel and Vendor.panel:IsShown() and not Vendor.ticker then
+		C_Timer.After(0.2, function() Vendor:RefreshPanel() end)
+	end
 end)

@@ -1,8 +1,8 @@
 -- BagBroker: tooltip lines as an aligned block (labels left, money right-aligned so gold, silver
 -- and copper line up vertically). The game's own "Sell Price:" line is restyled into the block.
 --   Sell Price                 2s 60c
---   Auction                   18s 00c      lowest buyout
---     25%                     20s 40c      quartiles of the unit price (weighted by quantity)
+--   Auction (net)             17s 04c      lowest buyout, minus the 5% cut and the deposit
+--     25%                     19s 31c      quartiles of the unit price (weighted by quantity), net
 --     50%                     23s 00c
 --     75%                     27s 60c
 -- Mob tooltips show the loot per kill and, per drop, its chance plus one vendor and one auction
@@ -104,19 +104,16 @@ local function OnItemTooltip(tooltip, data)
 	local bound = loc and C_Item.IsBound and C_Item.IsBound(loc)
 	local stats = (not bound) and ns:GetStats(itemID)
 	if stats then
-		MoneyRow(tooltip, "Auction", stats[1] * count)
-		MoneyRow(tooltip, "  25%", stats[2] * count, 0.8)
-		MoneyRow(tooltip, "  50%", stats[3] * count, 0.8)
-		MoneyRow(tooltip, "  75%", stats[4] * count, 0.8)
+		-- Every auction value is net: price minus the 5% cut minus the deposit.
+		local deposit = ns:DepositPerUnit(itemID, sellPrice or 0)
+		local function Net(price) return math.max(0, ns:NetFromPrice(itemID, price, sellPrice, deposit)) * count end
+		MoneyRow(tooltip, "Auction (net)", Net(stats[1]))
+		MoneyRow(tooltip, "  25%", Net(stats[2]), 0.8)
+		MoneyRow(tooltip, "  50%", Net(stats[3]), 0.8)
+		MoneyRow(tooltip, "  75%", Net(stats[4]), 0.8)
 		changed = true
 	end
 	if changed and tooltip.Show then tooltip:Show() end
-end
-
-local function KillsLabel(kills, source)
-	if source == "database" then return "database" end
-	if source == "both" then return ("database + %d kills"):format(kills) end
-	return ("%d kills"):format(kills)
 end
 
 local function Percent(p)
@@ -144,21 +141,21 @@ local function OnUnitTooltip(tooltip, data)
 	local drops, money, world, kills, source = ns.Farm:DropTable(npcID)
 	if not drops then return end
 	local value = ns.Farm:MobValue(npcID) or 0
-	MoneyRow(tooltip, ("Loot per kill (%s)"):format(KillsLabel(kills, source)), value)
+	MoneyRow(tooltip, ("Loot per kill (%s)"):format(source), value)
 	if #drops > 0 then
 		-- One vendor and one auction unit price per item, in aligned columns.
-		local header = ns.AlignColumns({ { "Chance", COL_CHANCE }, { "Vendor", COL_VENDOR }, { "AH", COL_AH } })
+		local header = ns.AlignColumns({ { "Chance", COL_CHANCE }, { "Vendor", COL_VENDOR }, { "AH net", COL_AH } })
 		tooltip:AddDoubleLine("  Drops", header, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6)
 	end
 	for i = 1, math.min(#drops, MAX_DROP_LINES) do
 		local d = drops[i]
 		local entry = ns.FarmDB and ns.FarmDB.items[d.id]
 		local vendor = entry and entry[1] or ns:GetSellPrice(d.id)
-		local ah = ns:GetAHPrice(d.id)
+		local ah = ns:GetAHNet(d.id, vendor)
 		local cells = ns.AlignColumns({
 			{ Percent(d.chance), COL_CHANCE },
 			{ vendor > 0 and ns.CoinString(vendor) or NONE, COL_VENDOR },
-			{ ah and ns.CoinString(ah) or NONE, COL_AH },
+			{ ah and ah > 0 and ns.CoinString(ah) or NONE, COL_AH },
 		})
 		tooltip:AddDoubleLine("  " .. ns.Farm:ItemName(d.id), cells, 1, 1, 1, 1, 1, 1)
 	end
