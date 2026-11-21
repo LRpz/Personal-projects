@@ -5,13 +5,19 @@
 --     25%                     20s 40c      quartiles of the unit price (weighted by quantity)
 --     50%                     23s 00c
 --     75%                     27s 60c
--- Mob tooltips show the loot per kill and drop chances, from the public database weighted with
--- your own kills (see Farm.lua).
+-- Mob tooltips show the loot per kill and, per drop, its chance plus one vendor and one auction
+-- unit price in aligned columns (public database weighted with your own kills, see Farm.lua):
+--   Loot per kill (database + 12 kills)            12s 40c
+--     Drops                       Chance   Vendor       AH
+--     Cracked Basilisk Scale         58%   1s 05c        -
+--     Basilisk Heart                 21%     45c   3s 10c
 local _, ns = ...
 
 local GetItemInfo = (C_Item and C_Item.GetItemInfo) or GetItemInfo
 local SELL_LINE = Enum and Enum.TooltipDataLineType and Enum.TooltipDataLineType.SellPrice
 local MAX_DROP_LINES = 6
+local COL_CHANCE, COL_VENDOR, COL_AH = 44, 84, 88 -- pixel widths of the drop columns
+local NONE = "|cff7f7f7f-|r"
 
 local function HasSellPriceLine(data)
 	if not SELL_LINE or not data or type(data.lines) ~= "table" then return false end
@@ -139,9 +145,22 @@ local function OnUnitTooltip(tooltip, data)
 	if not drops then return end
 	local value = ns.Farm:MobValue(npcID) or 0
 	MoneyRow(tooltip, ("Loot per kill (%s)"):format(KillsLabel(kills, source)), value)
+	if #drops > 0 then
+		-- One vendor and one auction unit price per item, in aligned columns.
+		local header = ns.AlignColumns({ { "Chance", COL_CHANCE }, { "Vendor", COL_VENDOR }, { "AH", COL_AH } })
+		tooltip:AddDoubleLine("  Drops", header, 0.6, 0.6, 0.6, 0.6, 0.6, 0.6)
+	end
 	for i = 1, math.min(#drops, MAX_DROP_LINES) do
 		local d = drops[i]
-		tooltip:AddDoubleLine("  " .. ns.Farm:ItemName(d.id), Percent(d.chance), 1, 1, 1, 1, 1, 1)
+		local entry = ns.FarmDB and ns.FarmDB.items[d.id]
+		local vendor = entry and entry[1] or ns:GetSellPrice(d.id)
+		local ah = ns:GetAHPrice(d.id)
+		local cells = ns.AlignColumns({
+			{ Percent(d.chance), COL_CHANCE },
+			{ vendor > 0 and ns.CoinString(vendor) or NONE, COL_VENDOR },
+			{ ah and ns.CoinString(ah) or NONE, COL_AH },
+		})
+		tooltip:AddDoubleLine("  " .. ns.Farm:ItemName(d.id), cells, 1, 1, 1, 1, 1, 1)
 	end
 	if world > 0.0005 then
 		tooltip:AddDoubleLine("  Random world drops", Percent(world), 1, 1, 1, 1, 1, 1)

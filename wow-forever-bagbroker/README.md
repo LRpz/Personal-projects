@@ -82,12 +82,16 @@ All data reside in one account-wide SavedVariables table (`BagBrokerDB`). Auctio
 No game API exposes creature loot tables, so BagBroker ships a database built offline from two public, GPLv3-licensed sources (see "Data sources"). Mob tooltips show the expected loot value per kill and the drop chances, right-aligned like the price block:
 
 ```
-Loot per kill (database + 12 kills)     12s 40c
-  Cracked Basilisk Scale                    58%
-  Basilisk Heart                            21%
-  Random world drops                       2.4%
-  Skinning (you can skin it)              4s 10c
+Loot per kill (database + 12 kills)                   12s 40c
+  Drops                       Chance    Vendor          AH
+  Cracked Basilisk Scale         58%    1s 05c           -
+  Basilisk Heart                 21%       45c      3s 10c
+  Scorpashi Gloves              0.9%   21s 40c  3g 85s 00c
+  Random world drops                                  2.4%
+  Skinning (you can skin it)                        4s 10c
 ```
+
+Each drop shows its chance and one unit price per type: the vendor price and the auction reference price (the median by default, `/bb compare`); a dash marks a missing price. The columns are true fixed-width columns: every cell is measured with the tooltip font and padded with a transparent spacer (`spacer.tga`) to its column width.
 
 Your own kills (shared by all characters on the account) refine the database by Bayesian weighting. The database counts as a fixed number of kills, 25 by default (`/bb prior <kills>`), so that
 

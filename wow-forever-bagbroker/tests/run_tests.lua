@@ -224,6 +224,7 @@ local function Plain(text)
 	text = text:gsub("|TInterface\\MoneyFrame\\UI%-GoldIcon[^|]*|t", "g")
 	text = text:gsub("|TInterface\\MoneyFrame\\UI%-SilverIcon[^|]*|t", "s")
 	text = text:gsub("|TInterface\\MoneyFrame\\UI%-CopperIcon[^|]*|t", "c")
+	text = text:gsub("|TInterface\\AddOns\\BagBroker\\spacer[^|]*|t", " ")
 	text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
 	return text
 end
@@ -601,7 +602,8 @@ test("mob tooltip: loot per kill and drop chances with right-aligned values", fu
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-1234-00000009" })
 	local lines = PlainLines(tt.lines)
 	contains(lines, "Loot per kill (3 kills) || 13c")
-	contains(lines, "Linen Cloth || 33%")
+	contains(lines, "Linen Cloth || ")
+	contains(lines, " 33% 13c -", "chance, vendor price, no auction data yet")
 	contains(lines, "  Money || 4c")
 	ns.settings.mobTooltips = false
 	tt.lines = {}
@@ -618,13 +620,20 @@ test("mob tooltip: database creature shows weighted drops, world drops and skinn
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-500-00000001" })
 	local lines = PlainLines(tt.lines)
 	contains(lines, "Loot per kill (database) || 50c")
-	contains(lines, "Fang || 50%")
+	contains(lines, "  Drops ||  Chance Vendor AH", "column header")
+	contains(lines, "Fang || ")
+	contains(lines, " 50% 1s 00c -", "one vendor and one auction price per item")
 	contains(lines, "  Skinning (you can skin it) || 50c")
 	tt.lines = {}
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-501-00000001" })
 	lines = PlainLines(tt.lines)
 	contains(lines, "Loot per kill (database) || 1s 24c")
 	contains(lines, "  Random world drops || 1.0%")
+	ns:SetStats(2589, 10, 12, 15, 20, 100)
+	ns.Farm:Invalidate()
+	tt.lines = {}
+	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-501-00000002" })
+	contains(PlainLines(tt.lines), " 40% 13c 15c", "auction median shown once known")
 	contains(lines, "  Money || 1s 00c")
 	M.profs = nil
 	ns.Farm.profCache = nil

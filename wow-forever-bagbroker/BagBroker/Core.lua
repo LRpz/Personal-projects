@@ -176,6 +176,29 @@ function ns.CoinString(copper)
 	return c .. COIN.c
 end
 
+-- Fixed-width columns inside one tooltip text: each cell is right-aligned within its width by
+-- measuring it with the tooltip font and padding it with a transparent spacer of the missing width.
+local SPACER = "Interface\\AddOns\\BagBroker\\spacer"
+local measure
+local function TextWidth(text)
+	if not measure then
+		measure = UIParent:CreateFontString(nil, "OVERLAY", "GameTooltipText")
+		measure:Hide()
+	end
+	measure:SetText(text)
+	return measure:GetStringWidth() or 0
+end
+
+function ns.AlignColumns(cells)
+	local out = {}
+	for _, cell in ipairs(cells) do
+		local pad = math.floor(cell[2] - TextWidth(cell[1]) + 0.5)
+		if pad > 0 then out[#out + 1] = ("|T%s:1:%d|t"):format(SPACER, pad) end
+		out[#out + 1] = cell[1]
+	end
+	return table.concat(out)
+end
+
 -- Three right-aligned columns (gold, silver, copper) for lists such as the selling panel.
 function ns.CreateMoneyColumns(parent, width)
 	local f = CreateFrame("Frame", nil, parent)
