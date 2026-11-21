@@ -1,16 +1,22 @@
 -- BagBroker: standalone farming heatmap window.
 -- A separate, movable zone map (it does not touch the world map, so it coexists with map
--- replacements such as Carbonite). Each cell is coloured by the average loot value per kill of the
--- mobs killed there (blue = low, red = high); opacity grows with the number of kills recorded.
+-- replacements such as Carbonite). Three sources, cycled with the "Source" button:
+--   * My kills: where you looted, coloured by loot value per kill.
+--   * Database: creature spawns for your level from the public database, valued per kill
+--     (database weighted with your kills, plus skinning when you can skin them).
+--   * Gathering: herb and ore nodes your professions can gather, valued per node.
+-- Colour runs from blue (low) to red (high); opacity grows with the number of kills or spawns.
 -- Toggle with the minimap button, a key binding, "/bb map" or a macro containing "/bb map".
 local _, ns = ...
 
-local Heat = { tiles = {}, cells = {}, follow = true }
+local Heat = { tiles = {}, cells = {}, follow = true, mode = "kills" }
 ns.Heat = Heat
 
 local MAP_W, MAP_H = 600, 400
 local GRID_W, GRID_H = ns.HEAT_W or 60, ns.HEAT_H or 40
 local CELL_W, CELL_H = MAP_W / GRID_W, MAP_H / GRID_H
+local MODES = { "kills", "database", "gathering" }
+local MODE_LABELS = { kills = "My kills", database = "Database", gathering = "Gathering" }
 
 local STOPS = {
 	{ 0.00, 0.20, 0.40, 1.00 },
@@ -39,7 +45,14 @@ end
 
 local function MobName(npcID)
 	local mob = ns.db.mobs[npcID]
-	return (mob and mob.n) or ("NPC " .. npcID)
+	if mob and mob.n then return mob.n end
+	local m = ns.FarmDB and ns.FarmDB.mobs[npcID]
+	return (m and m[1]) or ("NPC " .. npcID)
+end
+
+local function MobValue(npcID)
+	if ns.Farm then return ns.Farm:MobValue(npcID) or 0 end
+	return ns:GetMobValue(ns.db.mobs[npcID])
 end
 
 ---------------------------------------------------------------------------
@@ -47,36 +60,59 @@ end
 ---------------------------------------------------------------------------
 -- Returns a list of { index, kills, avg, mobs } and the highest average on the map.
 function Heat:ComputeCells(mapID)
-	local data = ns.db.heat[mapID]
-	if not data then return {}, 0 end
-	local values = {}
-	local function MobValue(npcID)
-		local v = values[npcID]
-		if not v then
-			v = ns:GetMobValue(ns.db.mobs[npcID])
-			values[npcID] = v
-		end
-		return v
-	end
 	local cells, maxAvg = {}, 0
-	for index, cell in pairs(data) do
-		local kills, value = 0, 0
-		for npcID, n in pairs(cell) do
-			kills = kills + n
-			value = value + n * MobValue(npcID)
-		end
-		if kills > 0 then
-			local avg = value / kills
-			cells[#cells + 1] = { index = index, kills = kills, avg = avg, mobs = cell }
+	local function Push(index, count, total, ids)
+		if count > 0 then
+			local avg = total / count
+			cells[#cells + 1] = { index = index, kills = count, avg = avg, mobs = ids }
 			if avg > maxAvg then maxAvg = avg end
 		end
+	end
+	if self.mode == "kills" then
+		local data = ns.db.heat[mapID]
+		if not data then return cells, 0 end
+		local values = {}
+		for index, cell in pairs(data) do
+			local kills, value = 0, 0
+			for npcID, n in pairs(cell) do
+				values[npcID] = values[npcID] or MobValue(npcID)
+				kills = kills + n
+				value = value + n * values[npcID]
+			end
+			Push(index, kills, value, cell)
+		end
+	elseif ns.Farm and ns.FarmDB then
+		local profs = ns.Farm:GetProfessions()
+		local maps
+		if self.mode == "database" then
+			maps = ns.Farm:CollectKill(UnitLevel("player") or 1, profs, mapID)
+		else
+			maps = ns.Farm:CollectGather(profs, mapID)
+		end
+		for index, c in pairs(maps[mapID] or {}) do Push(index, c.spawns, c.total, c.ids) end
 	end
 	return cells, maxAvg
 end
 
 function Heat:MapsWithData()
-	local list = {}
-	for mapID in pairs(ns.db.heat) do list[#list + 1] = mapID end
+	local list, seen = {}, {}
+	local function Add(mapID)
+		if not seen[mapID] then
+			seen[mapID] = true
+			list[#list + 1] = mapID
+		end
+	end
+	if self.mode == "kills" or not ns.FarmDB then
+		for mapID in pairs(ns.db.heat) do Add(mapID) end
+	elseif self.mode == "database" then
+		for _, m in pairs(ns.FarmDB.mobs) do
+			for mapID in pairs(m[9]) do Add(mapID) end
+		end
+	else
+		for _, node in ipairs(ns.FarmDB.nodes) do
+			for mapID in pairs(node[5]) do Add(mapID) end
+		end
+	end
 	table.sort(list, function(a, b) return MapName(a) < MapName(b) end)
 	return list
 end
@@ -107,12 +143,20 @@ function Heat:DrawTiles(mapID)
 	end
 end
 
+local SUMMARY = {
+	kills = "%d kills recorded here. Best cell: %s per kill.",
+	database = "%d spawns for your level. Best cell: %s per kill.",
+	gathering = "%d nodes you can gather. Best cell: %s per node.",
+}
+
 function Heat:DrawCells(mapID)
 	for _, t in ipairs(self.cells) do t:Hide() end
 	local cells, maxAvg = self:ComputeCells(mapID)
 	self.cellData = {}
+	local total = 0
 	for i, cell in ipairs(cells) do
 		self.cellData[cell.index] = cell
+		total = total + cell.kills
 		local t = self.cells[i]
 		if not t then
 			t = self.overlay:CreateTexture(nil, "ARTWORK")
@@ -127,18 +171,41 @@ function Heat:DrawCells(mapID)
 		t:SetPoint("TOPLEFT", self.map, "TOPLEFT", cx * CELL_W, -cy * CELL_H)
 		t:Show()
 	end
-	local kills = 0
-	for _, cell in ipairs(cells) do kills = kills + cell.kills end
-	self.summary:SetText(("%d kills recorded here. Best cell: %s per kill."):format(kills, ns.FormatMoney(maxAvg)))
+	self.summary:SetText(SUMMARY[self.mode]:format(total, ns.FormatMoney(maxAvg)))
+end
+
+function Heat:SetHighlight(spot)
+	local box = self.highlight
+	if not spot or not spot.cx then
+		box:Hide()
+		return
+	end
+	box:ClearAllPoints()
+	box:SetPoint("TOPLEFT", self.map, "TOPLEFT", (spot.cx - 2) * CELL_W, -(spot.cy - 2) * CELL_H)
+	box:SetSize(5 * CELL_W, 5 * CELL_H)
+	box:Show()
 end
 
 function Heat:ShowMap(mapID)
 	if not mapID then return end
 	self.mapID = mapID
 	self.frame.TitleText:SetText("BagBroker heatmap: " .. MapName(mapID))
+	self.modeButton:SetText("Source: " .. MODE_LABELS[self.mode])
 	self:DrawTiles(mapID)
 	self:DrawCells(mapID)
 	self.hoverIndex = nil
+	if self.spot and self.spot.ui ~= mapID then self.spot = nil end
+	self:SetHighlight(self.spot)
+end
+
+-- Called from the farming spots window.
+function Heat:ShowSpot(row)
+	self:Create()
+	self.mode = row.kind == "gather" and "gathering" or "database"
+	self.follow = false
+	self.spot = row
+	if not self.frame:IsShown() then self.frame:Show() end
+	self:ShowMap(row.ui)
 end
 
 function Heat:CurrentMap()
@@ -154,7 +221,18 @@ function Heat:Step(direction)
 	end
 	pos = ((pos - 1 + direction) % #list) + 1
 	self.follow = false
+	self.spot = nil
 	self:ShowMap(list[pos])
+end
+
+function Heat:CycleMode()
+	local index = 1
+	for i, m in ipairs(MODES) do
+		if m == self.mode then index = i end
+	end
+	self.mode = MODES[index % #MODES + 1]
+	self.spot = nil
+	self:ShowMap(self.mapID or self:CurrentMap())
 end
 
 function Heat:UpdatePlayer()
@@ -171,6 +249,32 @@ function Heat:UpdatePlayer()
 	local facing = GetPlayerFacing and GetPlayerFacing()
 	if type(facing) == "number" and not ns.IsSecret(facing) then arrow:SetRotation(facing) end
 	arrow:Show()
+end
+
+local function MoneyRow(label, copper)
+	GameTooltip:AddDoubleLine(label, ns.CoinString(copper), 1, 1, 1, 1, 1, 1)
+end
+
+function Heat:ShowCellTooltip(cell)
+	GameTooltip:SetOwner(self.map, "ANCHOR_CURSOR")
+	local list = {}
+	for id, n in pairs(cell.mobs) do list[#list + 1] = { id = id, n = n } end
+	table.sort(list, function(a, b) return a.n > b.n end)
+	if self.mode == "gathering" then
+		MoneyRow(("Value per node (%d nodes)"):format(cell.kills), cell.avg)
+		for i = 1, math.min(5, #list) do
+			local node = ns.FarmDB.nodes[list[i].id]
+			MoneyRow(("  %s (%d)"):format(node[1], list[i].n), ns.Farm:NodeValue(node))
+		end
+	else
+		local what = self.mode == "kills" and "kills" or "spawns"
+		MoneyRow(("Loot per kill (%d %s)"):format(cell.kills, what), cell.avg)
+		for i = 1, math.min(5, #list) do
+			local m = list[i]
+			MoneyRow(("  %s (%d)"):format(MobName(m.id), m.n), MobValue(m.id))
+		end
+	end
+	GameTooltip:Show()
 end
 
 function Heat:UpdateHover()
@@ -194,17 +298,7 @@ function Heat:UpdateHover()
 		GameTooltip:Hide()
 		return
 	end
-	GameTooltip:SetOwner(map, "ANCHOR_CURSOR")
-	ns.AddTooltipLine(GameTooltip, ("Loot per kill: %s (%d kills)"):format(ns.FormatMoney(cell.avg), cell.kills))
-	local mobs = {}
-	for npcID, n in pairs(cell.mobs) do mobs[#mobs + 1] = { id = npcID, n = n } end
-	table.sort(mobs, function(a, b) return a.n > b.n end)
-	for i = 1, math.min(5, #mobs) do
-		local m = mobs[i]
-		GameTooltip:AddDoubleLine("  " .. MobName(m.id),
-			("%d kills, %s each"):format(m.n, ns.FormatMoney(ns:GetMobValue(ns.db.mobs[m.id]))), 1, 1, 1, 1, 1, 1)
-	end
-	GameTooltip:Show()
+	self:ShowCellTooltip(cell)
 end
 
 ---------------------------------------------------------------------------
@@ -239,6 +333,14 @@ function Heat:Create()
 	self.overlay = CreateFrame("Frame", nil, map)
 	self.overlay:SetAllPoints()
 
+	local box = CreateFrame("Frame", nil, self.overlay, "BackdropTemplate")
+	if box.SetBackdrop then
+		box:SetBackdrop({ edgeFile = "Interface\\Buttons\\WHITE8X8", edgeSize = 2 })
+		box:SetBackdropBorderColor(1, 0.82, 0, 1)
+	end
+	box:Hide()
+	self.highlight = box
+
 	local arrow = self.overlay:CreateTexture(nil, "OVERLAY")
 	arrow:SetSize(24, 24)
 	arrow:SetTexture("Interface\\Minimap\\MinimapArrow")
@@ -257,19 +359,26 @@ function Heat:Create()
 	nextButton:SetPoint("LEFT", prev, "RIGHT", 2, 0)
 	local here = Button("Current zone", 100, function()
 		self.follow = true
+		self.spot = nil
 		self:ShowMap(self:CurrentMap())
 	end)
 	here:SetPoint("LEFT", nextButton, "RIGHT", 4, 0)
+	self.modeButton = Button("Source: My kills", 130, function() self:CycleMode() end)
+	self.modeButton:SetPoint("LEFT", here, "RIGHT", 4, 0)
+	local spots = Button("Best spots", 90, function() BagBroker_ToggleFarmSpots() end)
+	spots:SetPoint("BOTTOMRIGHT", -10, 10)
 
 	self.summary = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-	self.summary:SetPoint("LEFT", here, "RIGHT", 8, 6)
-	self.summary:SetPoint("RIGHT", -12, 0)
+	self.summary:SetPoint("LEFT", self.modeButton, "RIGHT", 8, 6)
+	self.summary:SetPoint("RIGHT", spots, "LEFT", -6, 0)
 	self.summary:SetJustifyH("LEFT")
+	self.summary:SetWordWrap(false)
 	local legend = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
-	legend:SetPoint("LEFT", here, "RIGHT", 8, -7)
-	legend:SetPoint("RIGHT", -12, 0)
+	legend:SetPoint("LEFT", self.modeButton, "RIGHT", 8, -7)
+	legend:SetPoint("RIGHT", spots, "LEFT", -6, 0)
 	legend:SetJustifyH("LEFT")
-	legend:SetText("Colour: loot value per kill (blue low, red high). Opacity: number of kills.")
+	legend:SetWordWrap(false)
+	legend:SetText("Blue low, red high value. Opacity: number of kills or spawns.")
 
 	local elapsed = 0
 	f:SetScript("OnUpdate", function(_, dt)

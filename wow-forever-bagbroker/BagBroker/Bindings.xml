@@ -8,6 +8,9 @@
 	<Binding name="BAGBROKER_TOGGLE_MOBTIPS" category="ADDONS">
 		BagBroker_ToggleMobTooltips()
 	</Binding>
+	<Binding name="BAGBROKER_TOGGLE_FARMSPOTS" category="ADDONS">
+		BagBroker_ToggleFarmSpots()
+	</Binding>
 	<Binding name="BAGBROKER_REPLACE_LOOT" category="ADDONS">
 		BagBroker_ReplaceLoot()
 	</Binding>

@@ -79,7 +79,7 @@ end
 -- Loading
 ---------------------------------------------------------------------------
 test("addon loads every TOC file and initialises account-wide saved variables", function()
-	eq(#files, 10, "file count")
+	eq(#files, 12, "file count")
 	truthy(BagBrokerDB and BagBrokerDB.settings, "saved variables")
 	eq(ns.settings.autoSell, true, "default autoSell")
 	eq(ns:GetRealmKey(), "TestRealm-Alliance", "realm key")
@@ -218,37 +218,76 @@ end)
 ---------------------------------------------------------------------------
 -- Tooltips
 ---------------------------------------------------------------------------
-local function ItemTooltip(itemID, data, owner)
-	local tt = CreateFrame("GameTooltip")
+-- Money strings contain coin textures and colour codes; reduce them to "1g 02s 03c".
+local function Plain(text)
+	text = tostring(text or "")
+	text = text:gsub("|TInterface\\MoneyFrame\\UI%-GoldIcon[^|]*|t", "g")
+	text = text:gsub("|TInterface\\MoneyFrame\\UI%-SilverIcon[^|]*|t", "s")
+	text = text:gsub("|TInterface\\MoneyFrame\\UI%-CopperIcon[^|]*|t", "c")
+	text = text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+	return text
+end
+local function PlainLines(lines)
+	local out = {}
+	for i, l in ipairs(lines) do out[i] = Plain(l) end
+	return out
+end
+
+local function ItemTooltip(itemID, data, owner, tt)
+	tt = tt or CreateFrame("GameTooltip")
 	tt.lines = {}
 	tt.owner = owner
 	data = data or {}
 	data.id = itemID
 	M.tooltipPostCalls[Enum.TooltipDataType.Item](tt, data)
-	return tt.lines
+	return PlainLines(tt.lines)
 end
 
-test("item tooltip adds Sell Price only when the game did not, and the auction quartiles", function()
+test("item tooltip: aligned block with sell price, lowest auction and quartiles", function()
 	local lines = ItemTooltip(4001, { lines = {} })
-	contains(lines, "Sell Price: <100>")
-	contains(lines, "Auction: <150> (<180> / <200> / <260>)")
-	lines = ItemTooltip(4001, { lines = { { type = Enum.TooltipDataLineType.SellPrice } } })
-	eq(#lines, 1, "only the auction line when the default sell price line exists")
+	eq(table.concat(lines, " | "), "Sell Price || 1s 00c | Auction || 1s 50c |   25% || 1s 80c |   50% || 2s 00c |   75% || 2s 60c")
+end)
+
+test("item tooltip: the game's own Sell Price line is restyled into the aligned block", function()
+	local tt = CreateFrame("GameTooltip", "TestTip")
+	local left = CreateFrame("FontString", "TestTipTextLeft1")
+	local right = CreateFrame("FontString", "TestTipTextRight1")
+	left.text = "Sell Price: 1s"
+	right.shown = false
+	tt.GetName = function() return "TestTip" end
+	tt.NumLines = function() return 1 end
+	local lines = ItemTooltip(4001, { lines = { { type = Enum.TooltipDataLineType.SellPrice } } }, nil, tt)
+	eq(left.text, "Sell Price", "label without the colon")
+	eq(Plain(right.text), "1s 00c", "money moved to the right column")
+	eq(right.shown, true, "right column shown")
+	eq(lines[1], "Auction || 1s 50c", "no duplicate sell row")
 end)
 
 test("item tooltip multiplies by the hovered bag stack like the default line", function()
 	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(4001, 10) } })
 	local owner = { GetBagID = function() return 0 end, GetID = function() return 1 end }
 	local lines = ItemTooltip(4001, { lines = {} }, owner)
-	contains(lines, "Sell Price: <1000>")
-	contains(lines, "Auction: <1500> (<1800> / <2000> / <2600>)")
+	eq(table.concat(lines, " | "), "Sell Price || 10s 00c | Auction || 15s 00c |   25% || 18s 00c |   50% || 20s 00c |   75% || 26s 00c")
 end)
 
-test("item tooltip hides auction line for soulbound bag items", function()
+test("item tooltip hides auction rows for soulbound bag items", function()
 	M.SetBags({ [0] = { size = 1, [1] = ItemSlot(4001, 1, { bound = true }) } })
 	local owner = { GetBagID = function() return 0 end, GetID = function() return 1 end }
 	local lines = ItemTooltip(4001, { lines = {} }, owner)
 	eq(#lines, 1, "sell price only")
+end)
+
+test("aligned money keeps every lower denomination so columns line up", function()
+	eq(Plain(ns.CoinString(5)), "5c")
+	eq(Plain(ns.CoinString(260)), "2s 60c")
+	eq(Plain(ns.CoinString(1800)), "18s 00c")
+	eq(Plain(ns.CoinString(48499)), "4g 84s 99c")
+	eq(Plain(ns.CoinString(125000)), "12g 50s 00c")
+	local cols = ns.CreateMoneyColumns(UIParent, 112)
+	cols:SetAmount(125000)
+	eq(Plain(cols.g.text) .. "|" .. Plain(cols.s.text) .. "|" .. Plain(cols.c.text), "12g|50s|00c", "three columns")
+	cols:SetAmount(95, "|cffff8040")
+	eq(Plain(cols.g.text) .. "|" .. Plain(cols.s.text) .. "|" .. Plain(cols.c.text), "||95c", "empty higher columns")
 end)
 
 ---------------------------------------------------------------------------
@@ -334,6 +373,8 @@ test("selling panel lists auctionable items, prices them from live listings and 
 	eq(goods.vendorBetter, true, "vendor 100 beats auction net 90")
 	eq(goods.checked, false, "not proposed when the vendor pays more")
 	eq(panel.byKey["i2000:20:0"].price, 19999, "sword undercuts 2g")
+	local top = panel.rowFrames[1].price
+	eq(Plain(top.g.text) .. "|" .. Plain(top.s.text) .. "|" .. Plain(top.c.text), "1g|99s|99c", "price in aligned columns")
 
 	M.ResetCalls()
 	panel:PostNext()
@@ -391,6 +432,135 @@ test("manual price edits and duration changes stick", function()
 end)
 
 ---------------------------------------------------------------------------
+-- Farming advisor: real database smoke test, then a small synthetic database for exact checks
+---------------------------------------------------------------------------
+test("public database loads and ranks real farming and gathering spots", function()
+	local db = ns.FarmDB
+	truthy(db and db.mobs and db.nodes, "FarmDB present")
+	local count = 0
+	for _ in pairs(db.mobs) do count = count + 1 end
+	truthy(count > 5000, "mobs: " .. count)
+	truthy((ns.Farm:DbValue(448) or 0) > 0, "Hogger has a database value")
+	local t0 = os.clock()
+	local spots = ns.Farm:KillSpots(30, {}, 5)
+	eq(#spots, 5, "five kill spots for level 30")
+	truthy(spots[1].total >= spots[5].total and spots[5].total > 0, "sorted by value")
+	local zones = ns.Farm:GatherZones({ mining = 175 }, "mining", 3)
+	eq(#zones, 3, "three mining zones")
+	truthy(os.clock() - t0 < 3, "fast enough: " .. (os.clock() - t0) .. " s")
+end)
+
+local REAL_DB = ns.FarmDB
+ns.FarmDB = {
+	items = { [2589] = { 13, 1, "Linen Cloth" }, [7001] = { 100, 1, "Fang" }, [7002] = { 1000, 2, "Green Blade" },
+		[2770] = { 5, 1, "Copper Ore" }, [4304] = { 50, 1, "Thick Leather" } },
+	refs = { [900] = { 7002, 0.5 } },
+	skins = { [800] = { 4304, 1 } },
+	nodes = {
+		{ "Copper Vein", "mining", 1, { 2770, 3 }, { [1429] = { 100, 4, 101, 2 } } },
+		{ "Mithril Deposit", "mining", 175, { 2770, 10 }, { [1429] = { 500, 1 } } },
+	},
+	mobs = {
+		[500] = { "Wolf", 20, 21, 0, 0, 800, { 7001, 0.5, 1 }, {}, { [1429] = { 1210, 5, 1211, 3 } }, 0, true },
+		[501] = { "Bandit", 21, 22, 0, 100, 0, { 2589, 0.4, 2 }, { 900, 0.02 }, { [1429] = { 2000, 6 }, [1436] = { 300, 2 } }, 4, true },
+		[502] = { "Elite Ogre", 21, 21, 1, 1000, 0, {}, {}, { [1429] = { 1212, 10 } }, 0, true },
+		[503] = { "Old Boar", 5, 6, 0, 0, 0, { 7001, 1, 1 }, {}, { [1429] = { 1500, 9 } }, 0, true },
+		[504] = { "New Forever Mob", 21, 21, 0, 0, 0, {}, {}, { [1429] = { 1700, 4 } }, 0, false },
+	},
+}
+ns.Farm:Invalidate()
+
+local function near(a, b, msg) if math.abs(a - b) > 0.01 then error(("%s: expected %s, got %s"):format(msg or "value", b, a), 2) end end
+
+test("database value per kill: money, drops, world drops and small drops", function()
+	near(ns.Farm:DbValue(500), 50, "wolf: 50% x 100c")
+	near(ns.Farm:DbValue(501), 124.4, "bandit: 100 + 0.4x2x13 + 0.02x0.5x1000 + 4")
+	eq(ns.Farm:DbValue(504), nil, "Forever-only creature has no database loot")
+end)
+
+test("personal kills are weighted against the database by kill count", function()
+	ns.db.mobs[500] = { k = 5, m = 0, i = { [7001] = { 5, 10 } } }  -- personal: 200c per kill
+	ns.Farm:Invalidate()
+	local v, n, source = ns.Farm:MobValue(500)
+	near(v, 75, "5 kills: (25x50 + 5x200) / 30")
+	eq(n, 5); eq(source, "both")
+	local drops = ns.Farm:DropTable(500)
+	near(drops[1].chance, (25 * 0.5 + 5) / 30, "drop chance weighted the same way")
+	ns.db.mobs[500] = { k = 100, m = 0, i = { [7001] = { 100, 200 } } }
+	ns.Farm:Invalidate()
+	near(ns.Farm:MobValue(500), 170, "100 kills: (25x50 + 100x200) / 125")
+	ns.db.mobs[504] = { k = 4, m = 400, i = {} }
+	ns.Farm:Invalidate()
+	local v2, _, source2 = ns.Farm:MobValue(504)
+	near(v2, 100, "Forever-only: personal data alone")
+	eq(source2, "mine")
+	ns.settings.priorKills = 0
+	ns.Farm:Invalidate()
+	near(ns.Farm:MobValue(500), 200, "prior 0: personal only")
+	ns.settings.priorKills = 25
+	ns.db.mobs[500], ns.db.mobs[504] = nil, nil
+	ns.Farm:Invalidate()
+end)
+
+test("skinning adds value only when the character's skill is high enough", function()
+	eq(ns.Farm.SkinningRequired(5), 1)
+	eq(ns.Farm.SkinningRequired(15), 50)
+	eq(ns.Farm.SkinningRequired(21), 105)
+	eq(ns.Farm:SkinValue(500, 104), 0, "skill 104 cannot skin a level 21 wolf")
+	near(ns.Farm:SkinValue(500, 110), 50, "skill 110 can")
+	eq(ns.Farm:SkinValue(500, nil), 0, "no skinning")
+end)
+
+test("kill spots: level window, normal creatures only, ranked by value per clear", function()
+	local spots = ns.Farm:KillSpots(20, {}, 5)
+	eq(spots[1].ui, 1429, "best map")
+	eq(spots[1].cx .. "," .. spots[1].cy, "20,33", "bandit camp (cell 2000)")
+	near(spots[1].total, 6 * 124.4, "6 bandits")
+	near(spots[2].total, 8 * 50, "8 wolves; the elite ogre next to them is excluded")
+	for _, spot in ipairs(spots) do
+		truthy(not spot.ids[503], "level 5 boars are outside the window")
+		truthy(not spot.ids[502], "elite excluded")
+	end
+	local skinned = ns.Farm:KillSpots(20, { skinning = 110 }, 5)
+	near(skinned[1].total, 8 * 100, "with skinning the wolves pay more than the bandits")
+end)
+
+test("gathering zones only count nodes the character can gather", function()
+	local zones = ns.Farm:GatherZones({ mining = 100 }, "mining", 5)
+	near(zones[1].total, 6 * 3 * 5, "copper only")
+	zones = ns.Farm:GatherZones({ mining = 200 }, "mining", 5)
+	near(zones[1].total, 6 * 3 * 5 + 10 * 5, "copper and mithril")
+	eq(ns.Farm.SkillColor(120, 1), "|cff808080", "copper is grey at 120")
+	eq(ns.Farm.SkillColor(180, 175), "|cffff8040", "mithril is orange at 180")
+end)
+
+test("farming spots window lists spots and opens them on the heatmap", function()
+	M.level = 20
+	M.profs = { { "Mining", 120, 186 }, { "Skinning", 110, 393 } }
+	SlashCmdList.BAGBROKER("farm")
+	local f = ns.Farm.frame
+	truthy(f and f:IsShown(), "window shown")
+	truthy(f.summary.text:find("Level 20", 1, true) and f.summary.text:find("Skinning 110", 1, true), "level and professions")
+	local rows = {}
+	for _, rf in ipairs(ns.Farm.rowFrames) do if rf.shown and rf.row then rows[#rows + 1] = rf.row end end
+	truthy(rows[1].header:find("level 14 to 21", 1, true), "level window header")
+	eq(rows[2].kind, "kill")
+	local gatherHeader
+	for _, r in ipairs(rows) do if r.header and r.header:find("Mining", 1, true) then gatherHeader = r end end
+	truthy(gatherHeader, "mining section")
+	ns.Farm.rowFrames[2].scripts.OnClick(ns.Farm.rowFrames[2])
+	eq(ns.Heat.mode, "database", "heatmap switched to database source")
+	eq(ns.Heat.mapID, 1429)
+	truthy(ns.Heat.highlight.shown, "spot highlighted")
+	local cells = ns.Heat:ComputeCells(1429)
+	truthy(#cells >= 3, "database cells drawn")
+	ns.Heat.frame:Hide()
+	ns.Heat.mode = "kills"
+	f:Hide()
+	M.profs = nil
+end)
+
+---------------------------------------------------------------------------
 -- Loot learning, mob tooltips, heatmap
 ---------------------------------------------------------------------------
 test("loot windows teach drop rates per NPC, including AoE loot and coin", function()
@@ -423,19 +593,41 @@ test("empty corpses of tapped targets count as kills", function()
 	M.units.target = nil
 end)
 
-test("mob tooltip shows loot per kill and drop chances in default line style", function()
-	-- Linen: vendor 13; value per kill = (12 coin + 2 linen x 13) / 3 kills
+test("mob tooltip: loot per kill and drop chances with right-aligned values", function()
+	-- Creature 1234 is not in the database: personal data only. Linen vendor 13c:
+	-- value per kill = (12 coin + 2 linen x 13) / 3 kills = 12.7c
 	local tt = CreateFrame("GameTooltip")
 	tt.lines = {}
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-1234-00000009" })
-	contains(tt.lines, "Loot per kill: <13> (3 kills)")
-	contains(tt.lines, "Linen Cloth|r || 33%")
-	contains(tt.lines, "Money || <4>")
+	local lines = PlainLines(tt.lines)
+	contains(lines, "Loot per kill (3 kills) || 13c")
+	contains(lines, "Linen Cloth || 33%")
+	contains(lines, "  Money || 4c")
 	ns.settings.mobTooltips = false
 	tt.lines = {}
 	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-1234-00000009" })
 	eq(#tt.lines, 0, "toggle off hides the lines")
 	ns.settings.mobTooltips = true
+end)
+
+test("mob tooltip: database creature shows weighted drops, world drops and skinning", function()
+	M.profs = { { "Skinning", 110, 393 } }
+	ns.Farm.profCache = nil
+	local tt = CreateFrame("GameTooltip")
+	tt.lines = {}
+	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-500-00000001" })
+	local lines = PlainLines(tt.lines)
+	contains(lines, "Loot per kill (database) || 50c")
+	contains(lines, "Fang || 50%")
+	contains(lines, "  Skinning (you can skin it) || 50c")
+	tt.lines = {}
+	M.tooltipPostCalls[Enum.TooltipDataType.Unit](tt, { guid = "Creature-0-1-2-3-501-00000001" })
+	lines = PlainLines(tt.lines)
+	contains(lines, "Loot per kill (database) || 1s 24c")
+	contains(lines, "  Random world drops || 1.0%")
+	contains(lines, "  Money || 1s 00c")
+	M.profs = nil
+	ns.Farm.profCache = nil
 end)
 
 test("heatmap window opens, colours cells and toggles", function()

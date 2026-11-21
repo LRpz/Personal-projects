@@ -5,6 +5,7 @@ BINDING_HEADER_BAGBROKER = "BagBroker"
 BINDING_NAME_BAGBROKER_TOGGLE_HEATMAP = "Toggle loot heatmap"
 BINDING_NAME_BAGBROKER_TOGGLE_PANEL = "Toggle auction selling panel"
 BINDING_NAME_BAGBROKER_TOGGLE_MOBTIPS = "Toggle mob loot tooltips"
+BINDING_NAME_BAGBROKER_TOGGLE_FARMSPOTS = "Toggle farming spots"
 BINDING_NAME_BAGBROKER_REPLACE_LOOT = "Bags full: replace cheapest item with offered loot"
 
 function BagBroker_ToggleMobTooltips()
@@ -14,6 +15,9 @@ end
 
 local HELP = {
 	"/bb map - toggle the loot heatmap window",
+	"/bb farm - best farming and gathering spots for your level and professions",
+	"/bb prior <kills> - weight of the public loot database in kills (default 25)",
+	"/bb levels <below> <above> - level range of creatures for farming spots (default 6 1)",
 	"/bb panel - toggle the auction selling panel (at the auction house)",
 	"/bb scan - start a full auction scan (once per 15 min, at the auction house)",
 	"/bb sell on|off - automatic vendor selling (hold Shift at a merchant to skip once)",
@@ -51,6 +55,24 @@ end
 local commands = {}
 
 commands.map = function() BagBroker_ToggleHeatmap() end
+commands.farm = function() BagBroker_ToggleFarmSpots() end
+
+commands.prior = function(arg)
+	local kills = tonumber(arg)
+	if kills and kills >= 0 and kills <= 1000 then
+		ns.settings.priorKills = kills
+		ns.Farm:Invalidate()
+	end
+	ns:Print(("The public loot database counts as %d kills; your own kills add to that."):format(ns.settings.priorKills))
+end
+
+commands.levels = function(arg)
+	local below, above = (arg or ""):match("^(%d+)%s+(%d+)$")
+	if below then
+		ns.settings.farmBelow, ns.settings.farmAbove = tonumber(below), tonumber(above)
+	end
+	ns:Print(("Farming spots use creatures from %d levels below to %d above your level."):format(ns.settings.farmBelow, ns.settings.farmAbove))
+end
 commands.panel = function() BagBroker_ToggleAuctionPanel() end
 commands.scan = function() ns.Scanner:StartFullScan(true) end
 

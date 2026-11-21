@@ -1,2 +1,5 @@
 # Packaged addon for manual installation (rebuilt from BagBroker/)
 BagBroker.zip
+# Downloaded source databases for tools/build_farm_data.py
+tools/.cache/
+__pycache__/

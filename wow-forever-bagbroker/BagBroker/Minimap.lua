@@ -1,5 +1,5 @@
 -- BagBroker: minimap button (left click: heatmap, right click: mob loot tooltips,
--- shift click: auction selling panel, drag: move around the minimap).
+-- shift click: auction selling panel, ctrl click: farming spots, drag: move around the minimap).
 local _, ns = ...
 
 local Mini = {}
@@ -38,7 +38,9 @@ function Mini:Create()
 	border:SetPoint("TOPLEFT")
 
 	b:SetScript("OnClick", function(_, button)
-		if IsShiftKeyDown() then
+		if IsControlKeyDown and IsControlKeyDown() then
+			BagBroker_ToggleFarmSpots()
+		elseif IsShiftKeyDown() then
 			BagBroker_ToggleAuctionPanel()
 		elseif button == "RightButton" then
 			ns.settings.mobTooltips = not ns.settings.mobTooltips
@@ -63,6 +65,7 @@ function Mini:Create()
 		GameTooltip:AddLine("Left click: loot heatmap", 1, 1, 1)
 		GameTooltip:AddLine("Right click: mob loot tooltips (" .. (ns.settings.mobTooltips and "on" or "off") .. ")", 1, 1, 1)
 		GameTooltip:AddLine("Shift click: auction selling panel", 1, 1, 1)
+		GameTooltip:AddLine("Ctrl click: farming spots for your level and professions", 1, 1, 1)
 		GameTooltip:AddLine("Drag: move this button", 0.6, 0.6, 0.6)
 		GameTooltip:Show()
 	end)

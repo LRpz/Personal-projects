@@ -151,6 +151,17 @@ function GetNormalizedRealmName() return "TestRealm" end
 function GetRealmName() return "Test Realm" end
 function UnitFactionGroup() return M.faction or "Alliance" end
 function GetPlayerFacing() return 0 end
+function IsControlKeyDown() return M.ctrl or false end
+function UnitLevel() return M.level or 20 end
+-- Professions: M.profs = { {name, rank, skillLine}, ... }
+function GetProfessions()
+	local p = M.profs or {}
+	return p[1] and 1 or nil, p[2] and 2 or nil, nil, nil, nil
+end
+function GetProfessionInfo(index)
+	local p = M.profs[index]
+	return p[1], 1, p[2], 300, 0, 0, p[3]
+end
 
 SELL_PRICE = "Sell Price"
 MONEY = "Money"

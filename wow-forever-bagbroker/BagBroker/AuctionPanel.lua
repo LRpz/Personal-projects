@@ -363,10 +363,8 @@ function Panel:CreateRow(i)
 	rf.dur:SetWidth(30)
 	rf.dur:SetJustifyH("RIGHT")
 
-	rf.price = rf:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	rf.price = ns.CreateMoneyColumns(rf, 112) -- gold, silver and copper aligned between rows
 	rf.price:SetPoint("RIGHT", rf.dur, "LEFT", -6, 0)
-	rf.price:SetWidth(112)
-	rf.price:SetJustifyH("RIGHT")
 
 	rf.name = rf:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	rf.name:SetPoint("LEFT", rf.icon, "RIGHT", 4, 0)
@@ -403,20 +401,18 @@ function Panel:FillRow(rf, row)
 	rf.icon:SetTexture(row.icon)
 	local countText = row.count > 1 and (" x" .. row.count) or ""
 	rf.name:SetText(ns.QualityColor(row.quality) .. (row.name or "?") .. "|r" .. countText)
-	local text
 	if row.status == "posting" then
-		text = "|cffffd200Posting...|r"
+		rf.price:SetLabel("|cffffd200Posting...|r")
 	elseif row.status == "failed" then
-		text = "|cffff4040Failed|r"
+		rf.price:SetLabel("|cffff4040Failed|r")
 	elseif row.price then
-		local color = row.vendorBetter and "|cffff8040" or SOURCE_COLORS[row.source] or "|cffffffff"
-		text = color .. ns.FormatMoney(row.price) .. "|r"
+		local color = row.vendorBetter and "|cffff8040" or SOURCE_COLORS[row.source]
+		rf.price:SetAmount(row.price, color ~= "|cffffffff" and color or nil)
 	elseif row.searching then
-		text = "|cff808080...|r"
+		rf.price:SetLabel("|cff808080...|r")
 	else
-		text = "|cff808080no data|r"
+		rf.price:SetLabel("|cff808080no data|r")
 	end
-	rf.price:SetText(text)
 	rf.dur:SetText(DURATION_LABELS[row.duration] or "")
 	rf.sel:SetShown(self.selected == row.key)
 	rf:Show()

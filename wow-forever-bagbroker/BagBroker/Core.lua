@@ -33,6 +33,9 @@ ns.defaults = {
 	showMinimap = true,
 	minimapAngle = 215,
 	durations = { consumable = 1, trade = 1, gear = 2, rare = 3, other = 2 }, -- 1 = 12h, 2 = 24h, 3 = 48h
+	priorKills = 25,            -- weight of the public database, in kills, against personal kills
+	farmBelow = 6,              -- farming spots: creatures down to this many levels below yours
+	farmAbove = 1,              -- ... and up to this many levels above yours
 	debug = false,
 }
 
@@ -141,6 +144,79 @@ function ns.FormatMoney(copper)
 	end
 	if GetMoneyString then return GetMoneyString(copper, true) end
 	return ns.Pricing.FormatMoneyText(copper)
+end
+
+-- Money for aligned columns: lower denominations are always present (zero-padded and dimmed),
+-- so right-aligned values line up gold under gold, silver under silver, copper under copper.
+local COIN = {
+	g = "|TInterface\\MoneyFrame\\UI-GoldIcon:0:0:2:0|t",
+	s = "|TInterface\\MoneyFrame\\UI-SilverIcon:0:0:2:0|t",
+	c = "|TInterface\\MoneyFrame\\UI-CopperIcon:0:0:2:0|t",
+}
+ns.COIN = COIN
+local DIM = "|cff7f7f7f"
+
+local function Pad(n)
+	if n == 0 then return DIM .. "00|r" end
+	return ("%02d"):format(n)
+end
+
+function ns.SplitMoney(copper)
+	copper = math.floor((copper or 0) + 0.5)
+	return math.floor(copper / 10000), math.floor(copper / 100) % 100, copper % 100
+end
+
+function ns.CoinString(copper)
+	local g, s, c = ns.SplitMoney(copper)
+	if g > 0 then
+		local gold = BreakUpLargeNumbers and BreakUpLargeNumbers(g) or tostring(g)
+		return gold .. COIN.g .. " " .. Pad(s) .. COIN.s .. " " .. Pad(c) .. COIN.c
+	end
+	if s > 0 then return s .. COIN.s .. " " .. Pad(c) .. COIN.c end
+	return c .. COIN.c
+end
+
+-- Three right-aligned columns (gold, silver, copper) for lists such as the selling panel.
+function ns.CreateMoneyColumns(parent, width)
+	local f = CreateFrame("Frame", nil, parent)
+	f:SetSize(width, 14)
+	local copperW, silverW = 28, 28
+	local function Column(w, anchor, offset)
+		local fs = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+		fs:SetWidth(w)
+		fs:SetJustifyH("RIGHT")
+		fs:SetPoint("RIGHT", anchor or f, anchor and "LEFT" or "RIGHT", offset or 0, 0)
+		return fs
+	end
+	f.c = Column(copperW)
+	f.s = Column(silverW, f.c, 0)
+	f.g = Column(width - copperW - silverW, f.s, 0)
+	f.text = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	f.text:SetPoint("RIGHT")
+	f.text:SetJustifyH("RIGHT")
+	-- color: optional "|cffrrggbb" prefix for the digits (coin icons keep their own colours).
+	function f:SetAmount(copper, color)
+		local g, s, c = ns.SplitMoney(copper)
+		local function Digits(n, padded)
+			if padded and n == 0 then return DIM .. "00|r" end
+			local text = padded and ("%02d"):format(n) or tostring(n)
+			return color and (color .. text .. "|r") or text
+		end
+		local gold = g > 0 and (BreakUpLargeNumbers and BreakUpLargeNumbers(g) or tostring(g)) or nil
+		self.g:SetText(gold and ((color and (color .. gold .. "|r") or gold) .. COIN.g) or "")
+		self.s:SetText((g > 0 or s > 0) and (Digits(s, g > 0) .. COIN.s) or "")
+		self.c:SetText(Digits(c, g > 0 or s > 0) .. COIN.c)
+		self.text:Hide()
+		self.g:Show()
+		self.s:Show()
+		self.c:Show()
+	end
+	function f:SetLabel(text)
+		self.g:Hide(); self.s:Hide(); self.c:Hide()
+		self.text:SetText(text)
+		self.text:Show()
+	end
+	return f
 end
 
 -- Adds a white line exactly like GameTooltip_OnTooltipAddMoney does for the sell price.
@@ -398,9 +474,10 @@ function ns.NpcIDFromGUID(guid)
 	return nil
 end
 
--- Expected copper per kill from learned drops, valued at max(vendor, auction net).
+-- Expected copper per kill from your own drops, valued at max(vendor, auction net).
 function ns:GetMobValue(mob)
 	if not mob or (mob.k or 0) <= 0 then return 0 end
+	if ns.Farm then return ns.Farm:PersonalValue(mob) or 0 end
 	local total = mob.m or 0
 	for itemID, entry in pairs(mob.i or {}) do
 		total = total + (entry[2] or 0) * self:GetUnitValue(itemID, nil, true)

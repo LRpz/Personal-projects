@@ -1,12 +1,14 @@
 ## Interface: 16001
 ## Title: BagBroker
-## Notes: Vendor and auction prices on tooltips, smart vendor selling, an auction posting panel, loot replacement when bags are full, learned mob loot tables and a farming heatmap.
+## Notes: Vendor and auction prices on tooltips, smart vendor selling, an auction posting panel, loot replacement when bags are full, mob loot tables (public database plus your kills), farming spots and a heatmap.
 ## Version: 1.0.0
 ## SavedVariables: BagBrokerDB
 ## IconTexture: Interface\Icons\INV_Misc_Coin_02
 
 Core.lua
 Pricing.lua
+FarmData.lua
+Farm.lua
 Scanner.lua
 Tooltip.lua
 Vendor.lua
