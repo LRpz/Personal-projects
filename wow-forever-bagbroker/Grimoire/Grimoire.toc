@@ -1,0 +1,15 @@
+## Interface: 16001
+## Title: Grimoire
+## Notes: Warlock coach for WoW Forever: situation buttons with step-by-step casts and raid icons per demon, talent plan from current guides, trainer advice, and best gear upgrades within budget in BagBroker's auction panel.
+## Version: 1.0.0
+## OptionalDeps: BagBroker
+## SavedVariables: GrimoireDB
+## IconTexture: Interface\Icons\Spell_Shadow_DeathCoil
+
+Core.lua
+Data.lua
+Coach.lua
+Talents.lua
+Trainer.lua
+Gear.lua
+Commands.lua

@@ -19,3 +19,4 @@ Mail.lua
 HeatMap.lua
 Minimap.lua
 Commands.lua
+API.lua

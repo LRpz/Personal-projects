@@ -69,6 +69,7 @@ function Scanner:OnReplicateReady()
 	job.total = C_AuctionHouse.GetNumReplicateItems() or 0
 	job.index = 0          -- replicate indices are 0-based
 	job.buckets = {}
+	job.gear = {}          -- cheapest single-item auction per equipment item and suffix (for gear advisors)
 	job.auctions = 0
 	self:ProcessChunk()
 end
@@ -84,7 +85,7 @@ function Scanner:ProcessChunk()
 	end
 	local last = math.min(job.index + CHUNK, job.total) - 1
 	for i = job.index, last do
-		local _, _, count, _, _, _, _, _, _, buyout, _, _, _, _, _, _, itemID = C_AuctionHouse.GetReplicateItemInfo(i)
+		local _, _, count, quality, _, _, _, _, _, buyout, _, _, _, _, _, _, itemID = C_AuctionHouse.GetReplicateItemInfo(i)
 		if itemID and buyout and buyout > 0 and count and count > 0 then
 			local bucket = job.buckets[itemID]
 			if not bucket then
@@ -93,6 +94,7 @@ function Scanner:ProcessChunk()
 			end
 			bucket[#bucket + 1] = { price = buyout / count, qty = count }
 			job.auctions = job.auctions + 1
+			if count == 1 and (quality or 0) >= 2 then self:RecordGear(job, i, itemID, buyout) end
 		end
 	end
 	job.index = last + 1
@@ -102,6 +104,18 @@ function Scanner:ProcessChunk()
 	else
 		C_Timer.After(0, function() self:ProcessChunk() end)
 	end
+end
+
+-- Equipment auctions keep their link (random suffixes change the stats); one entry per variant.
+function Scanner:RecordGear(job, index, itemID, buyout)
+	local classID = select(6, C_Item.GetItemInfoInstant(itemID))
+	if classID ~= 2 and classID ~= 4 then return end
+	local link = C_AuctionHouse.GetReplicateItemLink and C_AuctionHouse.GetReplicateItemLink(index)
+	if type(link) ~= "string" then return end
+	local suffix = link:match("item:%d+:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:([^:]*)") or ""
+	local key = itemID .. ":" .. suffix
+	local old = job.gear[key]
+	if not old or buyout < old[2] then job.gear[key] = { link, buyout } end
 end
 
 function Scanner:FinishFullScan()
@@ -116,6 +130,13 @@ function Scanner:FinishFullScan()
 		end
 	end
 	ns:GetRealmData().lastScanDone = now
+	local gear, n = {}, 0
+	for _, entry in pairs(job.gear or {}) do
+		n = n + 1
+		gear[n] = entry
+	end
+	ns:GetRealmData().gear = gear
+	ns:GetRealmData().gearTime = now
 	ns:Print(("Full scan complete: %d auctions, %d items."):format(job.auctions, items))
 	ns:Fire("SCAN_STATE")
 	ns:Fire("SCAN_COMPLETE")

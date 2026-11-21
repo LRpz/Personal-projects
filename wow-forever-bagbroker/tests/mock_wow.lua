@@ -11,7 +11,7 @@ local function noop() end
 local Widget = {}
 local function NewWidget(kind, name, parent)
 	local w = setmetatable({ kind = kind, shown = true, scripts = {}, events = {}, text = "", checked = false,
-		width = 140, height = 140, children = {}, parent = parent }, Widget)
+		width = 140, height = 140, children = {}, parent = parent, attributes = {} }, Widget)
 	if name then _G[name] = w end
 	return w
 end
@@ -67,6 +67,8 @@ function Widget:SetEnabled(v) self.enabled = v end
 function Widget:AddLine(text) table.insert(self.lines, text) end
 function Widget:AddDoubleLine(l, r) table.insert(self.lines, l .. " || " .. r) end
 function Widget:GetOwner() return self.owner end
+function Widget:SetAttribute(k, v) self.attributes = self.attributes or {}; self.attributes[k] = v end
+function Widget:GetAttribute(k) return self.attributes and self.attributes[k] end
 
 function CreateFrame(kind, name, parent, template)
 	if template == "BasicFrameTemplateWithInset" and M.noBasicTemplate then error("unknown template") end
@@ -207,8 +209,8 @@ function C_Item.GetItemInfo(x)
 	local id = IDFrom(x)
 	local it = id and M.items[id]
 	if not it then return nil end
-	return it.name, M.Link(id), it.quality, it.ilvl or 1, 1, "", "", it.maxStack or 1, it.equipLoc or "", 1,
-		it.sellPrice or 0, it.classID or 15, 0, it.bindType or 0
+	return it.name, M.Link(id), it.quality, it.ilvl or 1, it.minLevel or 1, "", "", it.maxStack or 1, it.equipLoc or "", 1,
+		it.sellPrice or 0, it.classID or 15, it.subclassID or 0, it.bindType or 0
 end
 function C_Item.GetItemInfoInstant(x)
 	local id = IDFrom(x)
@@ -232,6 +234,7 @@ function C_Item.GetStackCount(loc)
 end
 function GetItemInfo(x) return C_Item.GetItemInfo(x) end
 function GetInventoryItemLink(_, slotID)
+	if M.equippedLinks then return M.equippedLinks[slotID] end
 	local ilvl = M.equipped[slotID]
 	return ilvl and ("equipped:" .. ilvl) or nil
 end
@@ -299,6 +302,62 @@ function UnitExists(unit) return M.units[unit] ~= nil end
 function UnitIsDead(unit) return M.units[unit] and M.units[unit].dead or false end
 function UnitIsTapDenied(unit) return M.units[unit] and M.units[unit].tapDenied or false end
 function UnitIsPlayer() return false end
+function UnitClass() return "Warlock", "WARLOCK" end
+function UnitCreatureFamily(unit) return unit == "pet" and M.petFamily or nil end
+function InCombatLockdown() return M.combat or false end
+function GetBindingKey() return nil end
+
+-- Spells: M.knownSpells[name] = { spellID, iconID }
+M.knownSpells = {}
+C_Spell = {}
+function C_Spell.GetSpellInfo(name)
+	local s = M.knownSpells[name]
+	if not s then return nil end
+	return { spellID = s[1], iconID = s[2], name = name }
+end
+function IsPlayerSpell(id)
+	for _, s in pairs(M.knownSpells) do if s[1] == id and not s.pet then return true end end
+	return false
+end
+function IsSpellKnown(id) return IsPlayerSpell(id) end
+
+-- Secure templates: wrapped OnClick snippets run with (self, button); state drivers are recorded.
+function SecureHandlerWrapScript(frame, script, header, preBody) frame.wrapSnippet = preBody end
+function RegisterStateDriver(frame, state, condition) frame.stateDriver = { state, condition } end
+-- Simulates one press: runs the restricted snippet, then "executes" the macro text it chose.
+function M.Press(frame, mouse)
+	local chunk = assert(loadstring("local self, button = ...\n" .. frame.wrapSnippet))
+	if chunk(frame, mouse or "LeftButton") == false then return nil end
+	local macro = frame:GetAttribute("macrotext")
+	table.insert(M.calls, { "Macro", frame.name, macro })
+	if frame.scripts.PostClick then frame.scripts.PostClick(frame, mouse or "LeftButton") end
+	return macro
+end
+function M.EndCombat(frame)
+	local chunk = assert(loadstring("local self, stateid, newstate = ...\n" .. frame:GetAttribute("_onstate-combat")))
+	chunk(frame, "combat", "0")
+end
+
+-- Talents: M.talents[nodeID] = rank
+M.talents = {}
+C_ClassTalents = { GetActiveConfigID = function() return 1 end }
+C_Traits = { GetNodeInfo = function(_, nodeID) return { activeRank = M.talents[nodeID] or 0, maxRanks = 5 } end }
+
+-- Trainer: M.trainer = { {name, type, icon, level, cost}, ... }
+M.trainer = {}
+function GetNumTrainerServices() return #M.trainer end
+function GetTrainerServiceInfo(i) local t = M.trainer[i]; return t[1], t[2], t[3], t[4] end
+function GetTrainerServiceCost(i) return M.trainer[i][5] end
+function BuyTrainerService(i) table.insert(M.calls, { "BuyTrainerService", i, M.trainer[i][1] }) end
+
+-- Item stats and tooltip text for gear scoring: M.itemStats[itemID], M.itemText[itemID]
+M.itemStats, M.itemText = {}, {}
+function C_Item.GetItemStats(link) return M.itemStats[IDFrom(link)] or {} end
+C_TooltipInfo = { GetHyperlink = function(link)
+	local lines = {}
+	for _, t in ipairs(M.itemText[IDFrom(link)] or {}) do lines[#lines + 1] = { leftText = t } end
+	return { lines = lines }
+end }
 function UnitCanAttack() return true end
 function CanLootUnit(guid) return M.lootable and M.lootable[guid] or false, true end
 
@@ -340,7 +399,11 @@ function C_AuctionHouse.GetNumReplicateItems() return #M.replicate end
 function C_AuctionHouse.GetReplicateItemInfo(index)
 	local r = M.replicate[index + 1]
 	if not r then return nil end
-	return "n", 1, r.count, 1, true, 1, "", 0, 0, r.buyout, 0, nil, nil, "o", "o", 0, r.itemID, true
+	return "n", 1, r.count, r.quality or 1, true, 1, "", 0, 0, r.buyout, 0, nil, nil, "o", "o", 0, r.itemID, true
+end
+function C_AuctionHouse.GetReplicateItemLink(index)
+	local r = M.replicate[index + 1]
+	return r and (r.link or M.Link(r.itemID))
 end
 function C_AuctionHouse.IsThrottledMessageSystemReady() return M.throttleReady end
 function C_AuctionHouse.SendSearchQuery(itemKey, sorts, separate)
@@ -394,6 +457,8 @@ end
 function StaticPopup_Hide(which) table.insert(M.calls, { "StaticPopup_Hide", which }) end
 
 AuctionHouseFrame = NewWidget("Frame", "AuctionHouseFrame")
+AuctionHouseFrame.SearchBar = { SetSearchText = function(_, t) M.searchText = t end, StartSearch = function() M.searched = true end }
+ClassTrainerFrame = NewWidget("Frame", "ClassTrainerFrame")
 MerchantFrame = NewWidget("Frame", "MerchantFrame")
 MailFrame = NewWidget("Frame", "MailFrame")
 SendMailFrame = NewWidget("Frame", "SendMailFrame")

@@ -79,7 +79,7 @@ end
 -- Loading
 ---------------------------------------------------------------------------
 test("addon loads every TOC file and initialises account-wide saved variables", function()
-	eq(#files, 14, "file count")
+	eq(#files, 15, "file count")
 	truthy(BagBrokerDB and BagBrokerDB.settings, "saved variables")
 	eq(ns.settings.autoSell, true, "default autoSell")
 	eq(ns:GetRealmKey(), "TestRealm-Alliance", "realm key")

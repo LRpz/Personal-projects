@@ -501,14 +501,20 @@ function Panel:Create()
 	f:EnableMouse(true)
 	self.frame = f
 
-	local catLabel = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	-- The selling widgets live on a page; other addons can add pages (tabs) through BagBrokerAPI.
+	local page = CreateFrame("Frame", nil, f)
+	page:SetAllPoints()
+	self.sellPage = page
+	self.tabs = { { key = "sell", label = "Sell", title = "BagBroker: sell from bags", page = page } }
+
+	local catLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	catLabel:SetPoint("TOPLEFT", 14, -30)
 	catLabel:SetText("Default duration per category (left/right click to change)")
 
 	self.catButtons = {}
 	local columnWidth = (WIDTH - 28) / 3
 	for i, category in ipairs(CATEGORIES) do
-		local b = CreateButton(f, "", columnWidth - 4, nil)
+		local b = CreateButton(page, "", columnWidth - 4, nil)
 		b:SetHeight(20)
 		if GameFontHighlightSmall then b:SetNormalFontObject(GameFontHighlightSmall) end
 		b:SetPoint("TOPLEFT", 12 + ((i - 1) % 3) * columnWidth, -44 - math.floor((i - 1) / 3) * 22)
@@ -517,18 +523,18 @@ function Panel:Create()
 		self.catButtons[category] = b
 	end
 
-	self.allCheck = CreateFrame("CheckButton", nil, f, "UICheckButtonTemplate")
+	self.allCheck = CreateFrame("CheckButton", nil, page, "UICheckButtonTemplate")
 	self.allCheck:SetSize(22, 22)
 	self.allCheck:SetPoint("TOPLEFT", 10, -90)
 	self.allCheck:SetScript("OnClick", function(btn) self:SetAllChecked(btn:GetChecked()) end)
-	local header = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local header = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	header:SetPoint("LEFT", self.allCheck, "RIGHT", 2, 0)
 	header:SetText("Item")
-	local headerRight = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	local headerRight = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	headerRight:SetPoint("TOPRIGHT", -34, -96)
 	headerRight:SetText("Unit price      Time")
 
-	local scroll = CreateFrame("ScrollFrame", "BagBrokerAuctionPanelScroll", f, "UIPanelScrollFrameTemplate")
+	local scroll = CreateFrame("ScrollFrame", "BagBrokerAuctionPanelScroll", page, "UIPanelScrollFrameTemplate")
 	scroll:SetPoint("TOPLEFT", 10, -114)
 	scroll:SetPoint("BOTTOMRIGHT", -30, 168)
 	local content = CreateFrame("Frame", nil, scroll)
@@ -536,19 +542,19 @@ function Panel:Create()
 	scroll:SetScrollChild(content)
 	self.content = content
 
-	self:CreateEditor(f)
+	self:CreateEditor(page)
 
-	self.summary = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	self.summary = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	self.summary:SetPoint("BOTTOMLEFT", 12, 38)
 	self.summary:SetPoint("BOTTOMRIGHT", -12, 38)
 	self.summary:SetJustifyH("LEFT")
 
-	self.postButton = CreateButton(f, "Post next", 130, function() self:PostNext() end)
+	self.postButton = CreateButton(page, "Post next", 130, function() self:PostNext() end)
 	self.postButton:SetPoint("BOTTOMRIGHT", -10, 10)
-	self.scanButton = CreateButton(f, "Full scan", 84, function() ns.Scanner:StartFullScan(true) end)
+	self.scanButton = CreateButton(page, "Full scan", 84, function() ns.Scanner:StartFullScan(true) end)
 	self.scanButton:SetPoint("RIGHT", self.postButton, "LEFT", -4, 0)
 
-	self.status = f:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
+	self.status = page:CreateFontString(nil, "OVERLAY", "GameFontDisableSmall")
 	self.status:SetPoint("BOTTOMLEFT", 12, 16)
 	self.status:SetPoint("RIGHT", self.scanButton, "LEFT", -6, 0)
 	self.status:SetJustifyH("LEFT")
@@ -567,7 +573,64 @@ function Panel:Create()
 	f:SetScript("OnHide", function()
 		if ns.ahOpen then reopen:Show() end
 	end)
+	for _, tab in ipairs(self.pendingTabs or {}) do self:AddTab(tab) end
+	self.pendingTabs = nil
 	return f
+end
+
+---------------------------------------------------------------------------
+-- Tabs (other addons register pages through BagBrokerAPI.RegisterAuctionTab)
+---------------------------------------------------------------------------
+function Panel:AddTab(tab)
+	if not self.frame then
+		self.pendingTabs = self.pendingTabs or {}
+		table.insert(self.pendingTabs, tab)
+		return
+	end
+	for _, existing in ipairs(self.tabs) do
+		if existing.key == tab.key then return end
+	end
+	local page = CreateFrame("Frame", nil, self.frame)
+	page:SetAllPoints()
+	page:Hide()
+	tab.page = page
+	table.insert(self.tabs, tab)
+	self:LayoutTabs()
+end
+
+function Panel:LayoutTabs()
+	self.tabButtons = self.tabButtons or {}
+	for i, tab in ipairs(self.tabs) do
+		local b = self.tabButtons[i]
+		if not b then
+			b = CreateButton(self.frame, tab.label, 90, nil)
+			b:SetPoint("TOPLEFT", self.frame, "BOTTOMLEFT", 8 + (i - 1) * 94, 2)
+			self.tabButtons[i] = b
+		end
+		b:SetText(tab.label)
+		b:SetScript("OnClick", function() self:SelectTab(tab.key) end)
+		b:SetShown(#self.tabs > 1)
+	end
+	self:SelectTab(self.activeTab or "sell")
+end
+
+function Panel:SelectTab(key)
+	self.activeTab = key
+	for i, tab in ipairs(self.tabs) do
+		local active = tab.key == key
+		if active then
+			if tab.build and not tab.built then
+				tab.built = true
+				tab.build(tab.page)
+			end
+			self.frame.TitleText:SetText(tab.title or tab.label)
+			tab.page:Show()
+			if tab.onShow then tab.onShow(tab.page) end
+		else
+			tab.page:Hide()
+		end
+		if self.tabButtons and self.tabButtons[i] then self.tabButtons[i]:SetEnabled(not active) end
+	end
 end
 
 function Panel:RefreshEditor()
@@ -604,7 +667,7 @@ end
 
 function Panel:Refresh()
 	local f = self.frame
-	if not f or not f:IsShown() then return end
+	if not f or not f:IsShown() or not self.sellPage:IsShown() then return end
 	for i, row in ipairs(self.rows) do
 		self:FillRow(self.rowFrames[i] or self:CreateRow(i), row)
 	end

@@ -158,6 +158,43 @@ Clicking a row opens the heatmap on that zone with the matching source and, for 
 
 When the mailbox opens, a panel docks to its right. It lists every bag item worth selling at the auction house (bind-on-equip items, and items whose auction net beats the vendor price) with its auction net value, all ticked by default, and remembers your mule's name per realm (`/bb mule <name>` or the panel's field). **Attach** fills the Send Mail tab in one click: the recipient, the subject "AH items" and up to 12 stacks, the game's attachment limit. You then press the default Send button; the panel immediately offers the remaining stacks for the next mail.
 
+## Grimoire: warlock coach (companion addon)
+
+`Grimoire/` is a second addon for warlocks. Copy it next to `BagBroker/`; it uses BagBroker for the gear tab and works without it otherwise.
+
+### Combat coach
+
+A panel at the side of the screen holds four situation buttons, a list of the steps of the selected plan with a one-line reason each (the next step highlighted), a utility row and a tip. Each press of a situation button casts that plan's next step; one key binding ("Coach: one key for all plans") drives all four plans, with Shift, Ctrl and Alt selecting plans 2 to 4. Steps that switch target put a raid icon on the new enemy, so each enemy's role stays visible: skull for the demon's target, cross, square and triangle for DoT targets, moon for the feared or seduced mob.
+
+| Demon | Plans | Utility row |
+|---|---|---|
+| Voidwalker | 1 mob; 2 mobs; 3 mobs (Fear the third); pack of 4 or 5 (Corruption on each, Howl of Terror, Suffering) | Health Funnel, Sacrifice, Fear, Death Coil, Life Tap, Drain Soul |
+| Succubus (Sayaad) | 1 mob (drain-tank); 2 humanoids (Seduction); 3 mobs (Seduction and Fear); pack: switch demon | Seduction, Fear, Death Coil, Health Funnel, Life Tap, Drain Soul |
+| Felhunter | 1 mob; caster (Spell Lock); 2 mobs (Fear one); pack: switch demon | Spell Lock, Devour Magic, Fear, Death Coil, Health Funnel, Life Tap |
+| Imp | 1 mob; 2 mobs (Fear one); group play; pack: switch demon | Fire Shield, Fear, Death Coil, Health Funnel, Life Tap, Drain Soul |
+
+Only spells you know are included (Immolate drops out at 30, Siphon Life and Howl of Terror appear when learned), and the plans rebuild after combat when your spells or demon change. Right-click a plan button to restart it; plans also restart when combat ends.
+
+What adapts, and what cannot: the game evaluates macro conditions at every press, so a step picks a new enemy when your target is missing, dead or friendly, sends the demon only at a living enemy, and casts only on a living enemy. Forever applies Midnight's addon rules, so in combat no addon can read enemy health, debuffs, crits, misses or the combat log, or change what a button casts; Blizzard also prohibits automated decision-making beyond one fixed action per key press. A fully situational one-key rotation is therefore not possible as an addon. When the client offers Blizzard's own Assisted Combat (the Single-Button Assistant of the Mainline client), the coach shows its live suggestion, which the game itself computes.
+
+### Talent plan, trainer and tips
+
+`/grim talents` opens the Affliction levelling plan: one talent point per level from 10 to 60, with your current ranks read from the talent system, the next point highlighted and a chat reminder at each level-up. The talent tree and node identifiers come from the Forever game files (build 1.60.1.70959, through Everloot); the order is the consensus of current Forever guides, because the two most reputable ones could not be read in full: Wowhead (updated 2026-11-11) takes instant Corruption and then Suppression and resets at 40 into an Affliction-heavy build, Icy Veins (updated November 2026) ends at 40 Affliction / 11 Demonology, and Conquest Capped, Foreverspec and Talents Forever place Improved Drains and Pandemic in the 20s, Siphon Life at 30 and Wrack at 40. The tests check that every step respects the tree's rules; `Grimoire/Data.lua` holds the plan if you prefer another build. The window also lists which demon to use when, and levelling tips (your demon scales with your stats in Forever, Life Tap scales with Spirit, Voidwalker at half health on two mobs is normal).
+
+At a class trainer, a panel rates every spell as core (train every rank), useful or skip, with the reason, and **Learn core spells** buys all available core spells at once.
+
+### Gear upgrades within budget
+
+At the auction house, BagBroker's panel gains a **Gear** tab. For each equipment slot it shows the best upgrade over what you wear that costs at most your budget per item (default 5% of your gold, between 50 silver and 50 gold; editable in the tab or with `/grim budget`). Candidates are bind-on-equip items a warlock can use (cloth, necks, rings, trinkets, off-hands, cloaks, daggers, one-handed swords, staves, wands) from 6 levels below to 3 levels above yours; items you cannot wear yet are listed after the others with the level they need. The score is spell power × 1.00 + Stamina × 0.60 + Intellect × 0.45 + Spirit × 0.35 (left or right click the weights to change them); spell power is read from the item's stats and from its tooltip text ("Increases damage done by Shadow spells…", "+7 Shadow Spell Damage"), Fire damage counts for a quarter. Clicking a row searches that item in the default auction house window, where you buy it. The candidates come from BagBroker's full scan, which keeps the cheapest auction of every equipment item and random-suffix variant.
+
+| Command | Effect |
+|---|---|
+| `/grim coach` | Show or hide the coach (out of combat) |
+| `/grim talents` | Talent plan, demons and tips |
+| `/grim budget <price>\|auto` | Gear budget per item |
+| `/grim scale <0.6-1.5>` | Coach size |
+| `/grim reminders on\|off` | Talent reminders on level-up |
+
 ## Commands
 
 | Command | Effect |
@@ -205,7 +242,7 @@ python3 tools/build_farm_data.py
 
 ## Testing
 
-The repository includes a mock of the game API and 43 behavioural tests, which load the addon files in TOC order under Lua 5.1, the language version embedded in the client:
+The repository includes a mock of the game API, 43 behavioural tests for BagBroker and 12 for Grimoire (`lua5.1 tests/run_grimoire_tests.lua`: talent plan validity against the tree, coach sequences and macro conditions, demon switching, the trainer panel, gear capture in scans and the gear tab), which load the addon files in TOC order under Lua 5.1, the language version embedded in the client:
 
 ```
 lua5.1 tests/run_tests.lua
