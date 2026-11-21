@@ -316,7 +316,7 @@ end
 function Loot:CreatePrompt()
 	if self.prompt then return self.prompt end
 	local f = ns:CreateWindow("BagBrokerReplacePrompt", UIParent, "Bags full")
-	f:SetSize(320, 96)
+	f:SetSize(360, 96)
 	f:SetFrameStrata("DIALOG")
 	f:SetPoint("TOP", UIParent, "TOP", 0, -140)
 	f:Hide()
